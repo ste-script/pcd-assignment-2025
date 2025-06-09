@@ -12,7 +12,7 @@ Starting from this current solution (which is a centralized version of Agar.io),
 ## Requirements
 - The game is always active: players can join at any time and immediately start playing.
 - Players can be located on different nodes (from `akka cluster` perspective) and must be able to join or leave dynamically (*distributed player management*).
-  - Each player should have their our `LocalView`
+  - Each player should have their own `LocalView`
 - When a player consumes food, that food must be removed for all players in the system (*distributed food management*).
 - Every player must have a consistent view of the world, including the positions of all players and food (*consistent world view*).
   - No player should see another player or food that is not visible to others.
