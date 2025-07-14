@@ -1,50 +1,133 @@
 package it.unibo.agar.model
 
+import akka.actor.typed.ActorRef
+import akka.actor.typed.Behavior
+import akka.actor.typed.scaladsl.Behaviors
 import scala.util.Random
 
-class DistributedGameStateManager(
-    var world: World,
-    val speed: Double = 10.0
-) extends GameStateManager:
+object DistributedGameStateManager:
 
-  private var directions: Map[String, (Double, Double)] = Map.empty
-  def getWorld: World = world
+  sealed trait Command
 
-  // Move a player in a given direction (dx, dy)
-  def movePlayerDirection(id: String, dx: Double, dy: Double): Unit =
-    directions = directions.updated(id, (dx, dy))
+  // Commands for player management
+  case class MovePlayer(id: String, dx: Double, dy: Double) extends Command
+  case class GetWorld(replyTo: ActorRef[World]) extends Command
+  case object Tick extends Command
 
-  def tick(): Unit =
-    directions.foreach:
-      case (id, (dx, dy)) =>
-        world.playerById(id) match
+  // Messages for inter-manager communication
+  case class PlayerMovement(playerId: String, x: Double, y: Double, mass: Double) extends Command
+  case class PlayerEaten(playerId: Seq[String]) extends Command
+  case class FoodEaten(foodIds: Seq[String], newFood: Seq[Food]) extends Command
+  case class RegisterManager(managerId: String, manager: ActorRef[Command]) extends Command
+
+  def apply(playerId: String, world: World, speed: Double = 10.0): Behavior[Command] =
+    Behaviors.setup { context =>
+      context.log.info(s"Starting DistributedGameStateManager for player $playerId")
+
+      var localWorld = world
+      var direction: Option[(Double, Double)] = None
+      var otherManagers: Map[String, ActorRef[Command]] = Map.empty
+
+      def updatePlayerPosition(world: World, playerId: String, dx: Double, dy: Double, speed: Double) =
+        world.playerById(playerId) match {
           case Some(player) =>
-            world = updateWorldAfterMovement(updatePlayerPosition(player, dx, dy))
-          case None =>
-          // Player not found, ignore movement
+            val newX = (player.x + dx * speed).max(0).min(world.width)
+            val newY = (player.y + dy * speed).max(0).min(world.height)
+            val updatedPlayer = player.copy(x = newX, y = newY)
 
-  private def updatePlayerPosition(player: Player, dx: Double, dy: Double): Player =
-    val newX = (player.x + dx * speed).max(0).min(world.width)
-    val newY = (player.y + dy * speed).max(0).min(world.height)
-    player.copy(x = newX, y = newY)
+            // Check for food consumption
+            val foodEaten = world.foods.filter(food => EatingManager.canEatFood(updatedPlayer, food))
+            val playerAfterEating = foodEaten.foldLeft(updatedPlayer)((p, food) => p.grow(food))
 
-  private def updateWorldAfterMovement(player: Player): World =
-    val foodEaten = world.foods.filter(food => EatingManager.canEatFood(player, food))
-    val playerEatsFood = foodEaten.foldLeft(player)((p, food) => p.grow(food))
-    val playersEaten = world
-      .playersExcludingSelf(player)
-      .filter(player => EatingManager.canEatPlayer(playerEatsFood, player))
-    val playerEatPlayers = playersEaten.foldLeft(playerEatsFood)((p, other) => p.grow(other))
-    val newFoods = for f <- foodEaten yield
-      Food(
-        id = java.util.UUID.randomUUID().toString,
-        x = Random.nextInt(world.width),
-        y = Random.nextInt(world.width),
-        mass = f.mass
-      )
+            // Check for player consumption
+            val playersEaten = world
+              .playersExcludingSelf(playerAfterEating)
+              .filter(otherPlayer => EatingManager.canEatPlayer(playerAfterEating, otherPlayer))
+            val finalPlayer = playersEaten.foldLeft(playerAfterEating)((p, other) => p.grow(other))
 
-    world
-      .updatePlayer(playerEatPlayers)
-      .removePlayers(playersEaten)
-      .removeFoods(foodEaten)
-      .addFoods(newFoods)
+            // Generate new food for consumed food
+            val newFoods = foodEaten.map { f =>
+              Food(
+                id = java.util.UUID.randomUUID().toString,
+                x = Random.nextInt(world.width),
+                y = Random.nextInt(world.height),
+                mass = f.mass
+              )
+            }
+
+            // Update the world with the new player state, removed players, and new food
+            for (m <- otherManagers.values) {
+              m ! FoodEaten(foodEaten.map(_.id), newFoods)
+              m ! PlayerEaten(playersEaten.map(_.id))
+            }
+
+            world
+              .updatePlayer(finalPlayer)
+              .removePlayers(playersEaten)
+              .removeFoods(foodEaten)
+              .addFoods(newFoods)
+          case None => world
+        }
+
+      Behaviors.receiveMessage {
+        case MovePlayer(id, dx, dy) if id == playerId =>
+          // Only handle movement for our own player
+          direction = Some((dx, dy))
+          Behaviors.same
+
+        case GetWorld(replyTo) =>
+          replyTo ! localWorld
+          Behaviors.same
+
+        case Tick =>
+          direction match {
+            case Some((dx, dy)) =>
+              localWorld = updatePlayerPosition(localWorld, playerId, dx, dy, speed)
+            case None =>
+          }
+
+          // Always broadcast our current position to other managers
+          localWorld.playerById(playerId).foreach { ourPlayer =>
+            otherManagers.values.foreach { manager =>
+              manager ! PlayerMovement(playerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
+            }
+          }
+
+          Behaviors.same
+
+        case RegisterManager(managerId, manager) =>
+          otherManagers = otherManagers + (managerId -> manager)
+
+          // Send our current player state to the newly registered manager
+          localWorld.playerById(playerId).foreach { ourPlayer =>
+            manager ! PlayerMovement(playerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
+          }
+
+          Behaviors.same
+
+        case PlayerMovement(id, x, y, mass) if id != playerId =>
+          // Always update or add the player - this ensures players persist
+          localWorld = localWorld.playerById(id) match {
+            case Some(player) =>
+              localWorld.updatePlayer(player.copy(x = x, y = y, mass = mass))
+            case None =>
+              val newPlayer = Player(id, x, y, mass)
+              localWorld.copy(players = localWorld.players :+ newPlayer)
+          }
+          Behaviors.same
+
+        case PlayerEaten(ids) =>
+          val playerToRemove = localWorld.players.filter(player => ids.contains(player.id))
+          localWorld = localWorld.removePlayers(playerToRemove)
+          Behaviors.same
+
+        case FoodEaten(foodIds, newFood) =>
+          val foodToRemove = localWorld.foods.filter(food => foodIds.contains(food.id))
+          localWorld = localWorld.removeFoods(foodToRemove).addFoods(newFood)
+          Behaviors.same
+
+        case _ =>
+          Behaviors.same
+      }
+
+    }
