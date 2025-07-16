@@ -56,9 +56,11 @@ object DistributedGameStateManager:
             }
 
             // Update the world with the new player state, removed players, and new food
-            for (m <- otherManagers.values) {
-              m ! FoodEaten(foodEaten.map(_.id), newFoods)
-              m ! PlayerEaten(playersEaten.map(_.id))
+            if (foodEaten.nonEmpty || playersEaten.nonEmpty) {
+              for (m <- otherManagers.values) {
+                if (foodEaten.nonEmpty) m ! FoodEaten(foodEaten.map(_.id), newFoods)
+                if (playersEaten.nonEmpty) m ! PlayerEaten(playersEaten.map(_.id))
+              }
             }
 
             world
@@ -96,6 +98,7 @@ object DistributedGameStateManager:
           Behaviors.same
 
         case RegisterManager(managerId, manager) =>
+          context.log.info(s"Player $playerId registering manager $managerId")
           otherManagers = otherManagers + (managerId -> manager)
 
           // Send our current player state to the newly registered manager
@@ -103,10 +106,18 @@ object DistributedGameStateManager:
             manager ! PlayerMovement(playerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
           }
 
+          // Send current world state (all players) to the new manager
+          localWorld.players.foreach { player =>
+            manager ! PlayerMovement(player.id, player.x, player.y, player.mass)
+          }
+
+          // Send current food state to the new manager
+          manager ! FoodEaten(Seq.empty, localWorld.foods)
+
           Behaviors.same
 
-        case PlayerMovement(id, x, y, mass) if id != playerId =>
-          // Always update or add the player - this ensures players persist
+        case PlayerMovement(id, x, y, mass) =>
+          // Handle movement for any player, including our own (for synchronization)
           localWorld = localWorld.playerById(id) match {
             case Some(player) =>
               localWorld.updatePlayer(player.copy(x = x, y = y, mass = mass))
@@ -117,8 +128,8 @@ object DistributedGameStateManager:
           Behaviors.same
 
         case PlayerEaten(ids) =>
-          val playerToRemove = localWorld.players.filter(player => ids.contains(player.id))
-          localWorld = localWorld.removePlayers(playerToRemove)
+          val playersToRemove = localWorld.players.filter(player => ids.contains(player.id))
+          localWorld = localWorld.removePlayers(playersToRemove)
           Behaviors.same
 
         case FoodEaten(foodIds, newFood) =>
@@ -129,5 +140,4 @@ object DistributedGameStateManager:
         case _ =>
           Behaviors.same
       }
-
     }

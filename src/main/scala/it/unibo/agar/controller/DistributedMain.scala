@@ -1,9 +1,13 @@
 package it.unibo.agar.controller
 
-import akka.actor.typed.{ActorRef, ActorSystem}
-import akka.actor.typed.scaladsl.Behaviors
-import it.unibo.agar.model.{AIMovement, DistributedGameStateManager, GameCoordinator, GameInitializer, World}
-import it.unibo.agar.view.{GlobalView, LocalView}
+import akka.actor.typed.ActorRef
+import akka.actor.typed.ActorSystem
+import it.unibo.agar.model.AIMovement
+import it.unibo.agar.model.DistributedGameStateManager
+import it.unibo.agar.model.GameInitializer
+import it.unibo.agar.model.World
+import it.unibo.agar.view.GlobalView
+import it.unibo.agar.view.LocalView
 
 import java.awt.Window
 import java.util.Timer
@@ -21,56 +25,52 @@ object DistributedMain extends SimpleSwingApplication:
   private val foods = GameInitializer.initialFoods(numFoods, width, height)
   private val initialWorld = World(width, height, players, foods)
 
-  // Create the coordinator
-  private val coordinatorBehavior = GameCoordinator()
-  private val coordinator: ActorSystem[GameCoordinator.Command] =
-    it.unibo.agar.startup("agario-coordinator", 25251)(coordinatorBehavior)
+  var systems = List.empty[ActorSystem[DistributedGameStateManager.Command]]
+  var counter = 0
 
-  // Create individual game state managers for each player
-  private val playerManagers: Map[String, ActorRef[DistributedGameStateManager.Command]] =
-    players.map { player =>
-      // Each player starts with only their own player in the world, plus all the food
-      val playerWorld = World(width, height, Seq(player), foods)
-      val managerBehavior = DistributedGameStateManager(player.id, playerWorld)
-      val manager = coordinator.systemActorOf(managerBehavior, s"manager-${player.id}")
+  // Create ActorSystems for each player
+  for (player <- players) {
+    val managerBehavior = DistributedGameStateManager(player.id, initialWorld)
+    val system = it.unibo.agar.startup("agario", 25251 + counter)(managerBehavior)
+    systems = systems :+ system
+    counter += 1
+  }
 
-      // Register the manager with the coordinator
-      coordinator ! GameCoordinator.RegisterPlayerManager(player.id, manager)
+  // Register all managers with each other using proper ActorRef references
+  for ((player, index) <- players.zipWithIndex) do
+    val currentSystem = systems(index)
+    for ((otherPlayer, otherIndex) <- players.zipWithIndex if otherIndex != index) do
+      val otherSystem = systems(otherIndex)
+      println(s"Registering ${player.id} with ${otherPlayer.id}")
+      currentSystem ! DistributedGameStateManager.RegisterManager(otherPlayer.id, otherSystem)
 
-      player.id -> manager
-    }.toMap
+  // Wait for registration to complete
 
-  // Use the coordinator as the actor system for implicit parameters
-  implicit val system: ActorSystem[GameCoordinator.Command] = coordinator
+  // Use the first system as the implicit system
+  implicit val system: ActorSystem[DistributedGameStateManager.Command] = systems.head
 
   private val timer = new Timer()
   private val task: TimerTask = new TimerTask:
     override def run(): Unit =
-      // Move AI for player p1 using its dedicated manager
-      playerManagers.get("p1").foreach { manager =>
-        AIMovement.moveAI("p1", manager)(coordinator)
-      }
+      // Move AI for player p1 using its dedicated manager (first system)
+      val p1System = systems.head
+      AIMovement.moveAI("p1", p1System)(p1System)
 
-      // Send tick to coordinator which will distribute to all managers
-      coordinator ! GameCoordinator.Tick
+      // Send a Tick message to each manager to update the game state
+      for (managerSystem <- systems) do managerSystem ! DistributedGameStateManager.Tick
       onEDT(Window.getWindows.foreach(_.repaint()))
   timer.scheduleAtFixedRate(task, 0, 30) // every 30ms
 
   override def top: Frame =
     // Add a longer delay to ensure all managers have time to register and exchange player information
-    Thread.sleep(500)
+    // Use p1's manager for global view (first system)
+    val globalManager = systems.head
+    new GlobalView(globalManager)(system).open()
 
-    // Use p1's manager for global view (it should have received updates from all other managers)
-    val globalManager = playerManagers("p1")
-    new GlobalView(globalManager)(coordinator).open()
-
-    playerManagers.get("p1").foreach { manager =>
-      new LocalView(manager, "p1")(coordinator).open()
-    }
-
-    playerManagers.get("p2").foreach { manager =>
-      new LocalView(manager, "p2")(coordinator).open()
-    }
+    // Create LocalView for each player using their corresponding manager
+    for ((player, index) <- players.zipWithIndex)
+      val playerManager = systems(index)
+      new LocalView(playerManager, player.id)(system).open()
 
     // No launcher window, just return an empty frame
     new Frame { visible = false }
