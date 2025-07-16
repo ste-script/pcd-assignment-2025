@@ -19,6 +19,9 @@ object DistributedGameStateManager:
   case class PlayerEaten(playerId: Seq[String]) extends Command
   case class FoodEaten(foodIds: Seq[String], newFood: Seq[Food]) extends Command
   case class RegisterManager(managerId: String, manager: ActorRef[Command]) extends Command
+  case class PlayerJoined(playerId: String, player: Player) extends Command
+  case class PlayerLeft(playerId: String) extends Command
+  case class SyncWorldState(world: World) extends Command
 
   def apply(playerId: String, world: World, speed: Double = 10.0): Behavior[Command] =
     Behaviors.setup { context =>
@@ -135,6 +138,35 @@ object DistributedGameStateManager:
         case FoodEaten(foodIds, newFood) =>
           val foodToRemove = localWorld.foods.filter(food => foodIds.contains(food.id))
           localWorld = localWorld.removeFoods(foodToRemove).addFoods(newFood)
+          Behaviors.same
+
+        case PlayerJoined(newPlayerId, player) =>
+          context.log.info(s"Player $newPlayerId joined the game")
+          localWorld = localWorld.addPlayer(player)
+          // Notify other managers about the new player
+          otherManagers.values.foreach { manager =>
+            manager ! PlayerMovement(player.id, player.x, player.y, player.mass)
+          }
+          Behaviors.same
+
+        case PlayerLeft(leftPlayerId) =>
+          context.log.info(s"Player $leftPlayerId left the game")
+          localWorld = localWorld.removePlayer(leftPlayerId)
+          // Notify other managers about the player leaving
+          otherManagers.values.foreach { manager =>
+            manager ! PlayerEaten(Seq(leftPlayerId))
+          }
+          Behaviors.same
+
+        case SyncWorldState(worldState) =>
+          context.log.info(s"Synchronizing world state with manager")
+          localWorld = worldState
+          // Optionally, notify this manager's player about the updated world state
+          localWorld.playerById(playerId).foreach { ourPlayer =>
+            otherManagers.values.foreach { manager =>
+              manager ! PlayerMovement(playerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
+            }
+          }
           Behaviors.same
 
         case _ =>
