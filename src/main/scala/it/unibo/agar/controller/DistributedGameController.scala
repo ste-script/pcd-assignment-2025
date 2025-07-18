@@ -32,6 +32,10 @@ object DistributedGameController {
   // Store information about running games
   private var activeSystems: Map[String, ActorSystem[DistributedGameStateManager.Command]] = Map.empty
   private var aiPlayers: Set[String] = Set.empty
+  
+  // Track views for proper shutdown
+  private var globalView: Option[GlobalView] = None
+  private var localViews: Map[String, LocalView] = Map.empty
 
   def startNewGame(playerInfos: List[PlayerInfo]): Unit = {
     println(s"Starting new distributed game with ${playerInfos.length} players")
@@ -123,7 +127,7 @@ object DistributedGameController {
 
     // Create ActorSystems for each player
     for ((player, index) <- players.zipWithIndex) {
-      val system = createPlayerSystem(player, 25251 + index)
+      val system = createPlayerSystem(player, 25251 + index, isInitialGameSetup = true)
       systems = systems :+ system
       activeSystems += (player.id -> system)
     }
@@ -138,10 +142,18 @@ object DistributedGameController {
   private def createPlayerSystem(
       player: it.unibo.agar.model.Player,
       port: Int,
+      isInitialGameSetup: Boolean = false
   ): ActorSystem[DistributedGameStateManager.Command] = {
 
-    // Use existing world or create a minimal one for joining players
-    val world = World(width, height, Seq(player), GameInitializer.initialFoods(numFoods, width, height))
+    // For initial game setup, all players get full food
+    // For players joining existing games, create minimal world without food
+    val world = if (isInitialGameSetup) {
+      // Initial game setup - create world with initial food for all players
+      World(width, height, Seq(player), GameInitializer.initialFoods(numFoods, width, height))
+    } else {
+      // Joining player - create minimal world without food, will be synchronized later
+      World(width, height, Seq(player), Seq.empty)
+    }
 
     val managerBehavior = DistributedGameStateManager(player.id, world)
     it.unibo.agar.startup("agario", port)(managerBehavior)
@@ -246,13 +258,16 @@ object DistributedGameController {
       // Create global view using first system
       val globalSystem = activeSystems.values.head
       implicit val implicitSystem: ActorSystem[DistributedGameStateManager.Command] = globalSystem
-      new GlobalView(globalSystem).open()
+      globalView = Some(new GlobalView(globalSystem))
+      globalView.foreach(_.open())
 
       // Create local views for human players
       for (player <- players) {
         if (!aiPlayers.contains(player.id)) {
           activeSystems.get(player.id).foreach { playerSystem =>
-            new LocalView(playerSystem, player.id).open()
+            val localView = new LocalView(playerSystem, player.id)
+            localViews += (player.id -> localView)
+            localView.open()
           }
         }
       }
@@ -272,6 +287,22 @@ object DistributedGameController {
     if (gameTimer != null) {
       gameTimer.cancel()
     }
+
+    // Shutdown all views before terminating actor systems
+    globalView.foreach(_.shutdown())
+    for ((_, localView) <- localViews) {
+      localView.shutdown()
+    }
+    
+    // Close all views
+    globalView.foreach(_.dispose())
+    for ((_, localView) <- localViews) {
+      localView.dispose()
+    }
+
+    // Clear view references
+    globalView = None
+    localViews = Map.empty
 
     activeSystems.values.foreach(_.terminate())
     activeSystems = Map.empty

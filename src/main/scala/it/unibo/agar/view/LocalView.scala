@@ -9,11 +9,14 @@ import scala.util.{Success, Failure}
 
 import java.awt.Graphics2D
 import scala.swing.*
+import java.awt.event.WindowEvent
+import java.awt.event.WindowAdapter
 
 class LocalView(manager: ActorRef[DistributedGameStateManager.Command], playerId: String)(implicit system: akka.actor.typed.ActorSystem[_]) extends MainFrame:
 
   implicit val timeout: Timeout = 3.seconds
   private var currentWorld: World = World(400, 400, Seq.empty, Seq.empty) // Default empty world
+  private var isShuttingDown: Boolean = false
 
   title = s"Agar.io - Local View ($playerId)"
   preferredSize = new Dimension(400, 400)
@@ -31,27 +34,65 @@ class LocalView(manager: ActorRef[DistributedGameStateManager.Command], playerId
       AgarViewUtils.drawWorld(g, currentWorld, offsetX, offsetY)
 
     reactions += { case e: event.MouseMoved =>
-      val mousePos = e.point
-      val playerOpt = currentWorld.players.find(_.id == playerId)
-      playerOpt.foreach: player =>
-        val dx = (mousePos.x - size.width / 2) * 0.01
-        val dy = (mousePos.y - size.height / 2) * 0.01
-        manager ! DistributedGameStateManager.MovePlayer(playerId, dx, dy)
-      repaint()
+      if (!isShuttingDown && !system.whenTerminated.isCompleted) {
+        val mousePos = e.point
+        val playerOpt = currentWorld.players.find(_.id == playerId)
+        playerOpt.foreach: player =>
+          val dx = (mousePos.x - size.width / 2) * 0.01
+          val dy = (mousePos.y - size.height / 2) * 0.01
+          manager ! DistributedGameStateManager.MovePlayer(playerId, dx, dy)
+        repaint()
+      }
     }
 
   // Request world updates periodically
   private val timer = new javax.swing.Timer(30, _ => updateWorld())
   timer.start()
 
+  // Add window closing listener to properly shutdown the timer
+  peer.addWindowListener(new WindowAdapter {
+    override def windowClosing(e: WindowEvent): Unit = {
+      shutdown()
+    }
+  })
+
   private def updateWorld(): Unit =
+    // Check if we're shutting down or the actor system is terminated
+    if (isShuttingDown || system.whenTerminated.isCompleted) {
+      return
+    }
+
     import akka.actor.typed.scaladsl.AskPattern._
 
-    val worldFuture: Future[World] = manager.ask(DistributedGameStateManager.GetWorld.apply)
-    worldFuture.onComplete {
-      case Success(world) =>
-        currentWorld = world
-        repaint()
-      case Failure(exception) =>
-        println(s"Failed to get world state for LocalView ($playerId): ${exception.getMessage}")
-    }(system.executionContext)
+    try {
+      val worldFuture: Future[World] = manager.ask(DistributedGameStateManager.GetWorld.apply)
+      worldFuture.onComplete {
+        case Success(world) =>
+          if (!isShuttingDown) {
+            currentWorld = world
+            repaint()
+          }
+        case Failure(exception) =>
+          if (!isShuttingDown && !system.whenTerminated.isCompleted) {
+            println(s"Failed to get world state for LocalView ($playerId): ${exception.getMessage}")
+          }
+      }(system.executionContext)
+    } catch {
+      case _: IllegalStateException => 
+        // Actor system is already shut down, stop trying to make calls
+        shutdown()
+    }
+
+  def shutdown(): Unit = {
+    if (!isShuttingDown) {
+      isShuttingDown = true
+      if (timer != null) {
+        timer.stop()
+      }
+    }
+  }
+
+  override def closeOperation(): Unit = {
+    shutdown()
+    super.closeOperation()
+  }

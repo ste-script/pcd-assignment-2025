@@ -119,8 +119,9 @@ object DistributedGameStateManager:
             manager ! PlayerMovement(player.id, player.x, player.y, player.mass)
           }
 
-          // Send current food state to the new manager
-          manager ! FoodEaten(Seq.empty, localWorld.foods)
+          // Only the first manager (or a designated manager) should send food state
+          // to prevent food duplication when multiple managers register with a new one
+          // We'll let the SyncWorldState message handle food synchronization instead
 
           Behaviors.same
 
