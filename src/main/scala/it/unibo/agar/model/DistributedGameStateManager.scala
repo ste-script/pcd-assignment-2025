@@ -23,8 +23,9 @@ object DistributedGameStateManager:
   private case class PlayerEaten(playerId: Seq[String]) extends Command
   private case class FoodEaten(foodIds: Seq[String], newFood: Seq[Food]) extends Command
   private case class PlayerLeft(playerId: String) extends Command
+  private case class GameEnded(winnerId: String, winnerMass: Double) extends Command
 
-  def apply(playerId: String, world: World, speed: Double = 10.0): Behavior[Command] =
+  def apply(playerId: String, world: World, speed: Double, winningMass: Int): Behavior[Command] =
     Behaviors.setup { context =>
       context.log.info(s"Starting DistributedGameStateManager for player $playerId")
 
@@ -48,6 +49,16 @@ object DistributedGameStateManager:
               .playersExcludingSelf(playerAfterEating)
               .filter(otherPlayer => EatingManager.canEatPlayer(playerAfterEating, otherPlayer))
             val finalPlayer = playersEaten.foldLeft(playerAfterEating)((p, other) => p.grow(other))
+
+            if (finalPlayer.mass >= winningMass) {
+              context.log.info(s"Player ${finalPlayer.id} reached winning mass: ${finalPlayer.mass}")
+              // Broadcast game end to all other managers
+              otherManagers.values.foreach { manager =>
+                manager ! GameEnded(finalPlayer.id, finalPlayer.mass)
+              }
+              // Also notify the game controller about the game end
+              context.self ! GameEnded(finalPlayer.id, finalPlayer.mass)
+            }
 
             // Generate new food for consumed food
             val newFoods = foodEaten.map { f =>
@@ -169,6 +180,13 @@ object DistributedGameStateManager:
           localWorld = worldState
           // Optionally, notify this manager's player about the updated world state
           broadcastMovement()
+          Behaviors.same
+
+        case GameEnded(winnerId, winnerMass) =>
+          context.log.info(s"Game ended! Player $winnerId won with mass $winnerMass")
+          // Don't stop the actor immediately - let the controller handle the shutdown
+          // The controller will detect the game end and properly shut down all systems
+          //TODO handle game end logic, e.g., notify UI or reset state
           Behaviors.same
 
         case _ =>

@@ -3,7 +3,7 @@ package it.unibo.agar.model
 import akka.actor.typed.ActorRef
 import akka.util.Timeout
 import scala.concurrent.duration._
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.Future
 import scala.util.{Success, Failure}
 
 /** Object responsible for AI movement logic, separate from the game state management */

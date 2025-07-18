@@ -20,14 +20,23 @@ import scala.util.Random
 import javax.swing.JOptionPane
 import scala.concurrent.ExecutionContextExecutor
 
+import akka.actor.typed.scaladsl.AskPattern._
+import akka.util.Timeout
+import scala.concurrent.duration._
+import scala.util.{Success, Failure}
+
 object DistributedGameController {
 
   private val width = 1000
   private val height = 1000
   private val numFoods = 100
+  private val winningMass = 1000
+  private val playerSpeed = 10
 
   private var gameTimer: Timer = null
   private var isGameActive = false
+  private var gameEnded = false
+  private var winner: Option[(String, Double)] = None
 
   // Store information about running games
   private var activeSystems: Map[String, ActorSystem[DistributedGameStateManager.Command]] = Map.empty
@@ -155,7 +164,7 @@ object DistributedGameController {
       World(width, height, Seq(player), Seq.empty)
     }
 
-    val managerBehavior = DistributedGameStateManager(player.id, world)
+    val managerBehavior = DistributedGameStateManager(player.id, world, playerSpeed, winningMass)
     it.unibo.agar.startup("agario", port)(managerBehavior)
   }
 
@@ -181,10 +190,7 @@ object DistributedGameController {
       val existingSystem = activeSystems.values.head
 
       // Use ask pattern to get current world state
-      import akka.actor.typed.scaladsl.AskPattern._
-      import akka.util.Timeout
-      import scala.concurrent.duration._
-      import scala.util.{Success, Failure}
+
 
       implicit val timeout: Timeout = 3.seconds
       implicit val scheduler: Scheduler = existingSystem.scheduler
@@ -233,19 +239,21 @@ object DistributedGameController {
     gameTimer = new Timer()
     val task: TimerTask = new TimerTask {
       override def run(): Unit = {
-        // Move AI players
-        for (aiPlayerId <- aiPlayers) {
-          activeSystems.get(aiPlayerId).foreach { aiSystem =>
-            AIMovement.moveAI(aiPlayerId, aiSystem)(aiSystem)
+        if (!gameEnded) {
+          // Move AI players
+          for (aiPlayerId <- aiPlayers) {
+            activeSystems.get(aiPlayerId).foreach { aiSystem =>
+              AIMovement.moveAI(aiPlayerId, aiSystem)(aiSystem)
+            }
           }
+
+          // Send tick to all active systems
+          for (system <- activeSystems.values)
+            system ! DistributedGameStateManager.Tick
+
+          // Update UI
+          onEDT(Window.getWindows.foreach(_.repaint()))
         }
-
-        // Send tick to all active systems
-        for (system <- activeSystems.values)
-          system ! DistributedGameStateManager.Tick
-
-        // Update UI
-        onEDT(Window.getWindows.foreach(_.repaint()))
       }
     }
 
@@ -308,7 +316,51 @@ object DistributedGameController {
     activeSystems = Map.empty
     aiPlayers = Set.empty
     isGameActive = false
+    gameEnded = false
+    winner = None
   }
+
+  private def handleGameEnd(winnerId: String, winnerMass: Double): Unit = {
+    if (!gameEnded) {
+      gameEnded = true
+      winner = Some((winnerId, winnerMass))
+
+      // Stop the game timer
+      if (gameTimer != null) {
+        gameTimer.cancel()
+      }
+
+      // Show game end message
+      onEDT {
+        showGameEndMessage(winnerId, winnerMass)
+      }
+
+      println(s"Game ended! Player $winnerId won with mass $winnerMass")
+    }
+  }
+
+  private def showGameEndMessage(winnerId: String, winnerMass: Double): Unit = {
+    val message = s"Game Over!\n\nWinner: $winnerId\nFinal Mass: ${winnerMass.toInt}\n\nWould you like to start a new game?"
+    val result = JOptionPane.showConfirmDialog(
+      null,
+      message,
+      "Game Over",
+      JOptionPane.YES_NO_OPTION,
+      JOptionPane.INFORMATION_MESSAGE
+    )
+
+    if (result == JOptionPane.YES_OPTION) {
+      // Reset game state and show main menu
+      shutdown()
+      // You could restart the game launcher here if needed
+    } else {
+      // Exit the application
+      System.exit(0)
+    }
+  }
+
+  def isGameEnded: Boolean = gameEnded
+  def getWinner: Option[(String, Double)] = winner
 
   def isActive: Boolean = isGameActive
   def getActivePlayers: Set[String] = activeSystems.keySet
