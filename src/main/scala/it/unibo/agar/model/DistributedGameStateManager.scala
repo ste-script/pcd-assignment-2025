@@ -15,13 +15,14 @@ object DistributedGameStateManager:
   case object Tick extends Command
 
   // Messages for inter-manager communication
-  case class PlayerMovement(playerId: String, x: Double, y: Double, mass: Double) extends Command
-  case class PlayerEaten(playerId: Seq[String]) extends Command
-  case class FoodEaten(foodIds: Seq[String], newFood: Seq[Food]) extends Command
   case class RegisterManager(managerId: String, manager: ActorRef[Command]) extends Command
   case class PlayerJoined(playerId: String, player: Player) extends Command
-  case class PlayerLeft(playerId: String) extends Command
   case class SyncWorldState(world: World) extends Command
+
+  private case class PlayerMovement(playerId: String, x: Double, y: Double, mass: Double) extends Command
+  private case class PlayerEaten(playerId: Seq[String]) extends Command
+  private case class FoodEaten(foodIds: Seq[String], newFood: Seq[Food]) extends Command
+  private case class PlayerLeft(playerId: String) extends Command
 
   def apply(playerId: String, world: World, speed: Double = 10.0): Behavior[Command] =
     Behaviors.setup { context =>
