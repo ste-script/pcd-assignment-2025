@@ -1,9 +1,6 @@
 package it.unibo.agar.controller
 
 import akka.actor.typed.{ActorRef, ActorSystem}
-import akka.cluster.Cluster
-import akka.cluster.ClusterEvent.*
-import akka.actor.typed.scaladsl.Behaviors
 import it.unibo.agar.model.{AIMovement, DistributedGameStateManager, GameInitializer, World}
 import it.unibo.agar.view.{GlobalView, LocalView, PlayerInfo, JoinGameRequest}
 

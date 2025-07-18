@@ -18,7 +18,7 @@ object AIMovement:
     *   the current game world containing players and food
     * @return
     */
-  def nearestFood(player: String, world: World): Option[Food] =
+  private def nearestFood(player: String, world: World): Option[Food] =
     world.foods
       .sortBy(food => world.playerById(player).map(p => p.distanceTo(food)).getOrElse(Double.MaxValue))
       .headOption
@@ -34,10 +34,10 @@ object AIMovement:
     */
   def moveAI(name: String, gameManager: ActorRef[DistributedGameStateManager.Command])(implicit system: akka.actor.typed.ActorSystem[_]): Unit =
     import akka.actor.typed.scaladsl.AskPattern._
-    
+
     // Request the current world state from the game manager
     val worldFuture: Future[World] = gameManager.ask(DistributedGameStateManager.GetWorld.apply)
-    
+
     worldFuture.onComplete {
       case Success(world) =>
         val aiOpt = world.playerById(name)
@@ -47,13 +47,25 @@ object AIMovement:
             val dx = food.x - ai.x
             val dy = food.y - ai.y
             val distance = math.hypot(dx, dy)
-            if (distance > 0)
-              val normalizedDx = dx / distance
-              val normalizedDy = dy / distance
-              // Send movement command to the game manager
+
+            // Add minimum distance threshold to prevent oscillation
+            val minDistance = 5.0 // Adjust based on your game scale
+            val moveSpeed = 0.5   // Reduce speed to prevent overshooting
+
+            if (distance > minDistance) {
+              val normalizedDx = (dx / distance) * moveSpeed
+              val normalizedDy = (dy / distance) * moveSpeed
               gameManager ! DistributedGameStateManager.MovePlayer(name, normalizedDx, normalizedDy)
-          case _ => // Do nothing if AI or food doesn't exist
+            }
+          // If very close to food, stop moving to prevent oscillation
+
+          case (Some(ai), None) =>
+            // No food available - implement random movement or stay still
+            val randomDx = (math.random() - 0.5) * 0.1
+            val randomDy = (math.random() - 0.5) * 0.1
+            gameManager ! DistributedGameStateManager.MovePlayer(name, randomDx, randomDy)
+
+          case _ => // Do nothing if AI doesn't exist
       case Failure(exception) =>
-        // Handle timeout or other errors
         println(s"Failed to get world state for AI $name: ${exception.getMessage}")
     }(system.executionContext)
