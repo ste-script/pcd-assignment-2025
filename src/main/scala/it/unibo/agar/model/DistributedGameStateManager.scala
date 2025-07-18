@@ -75,6 +75,14 @@ object DistributedGameStateManager:
           case None => world
         }
 
+      def broadcastMovement(): Unit = {
+        localWorld.playerById(playerId).foreach { ourPlayer =>
+          otherManagers.values.foreach { manager =>
+            manager ! PlayerMovement(playerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
+          }
+        }
+      }
+
       Behaviors.receiveMessage {
         case MovePlayer(id, dx, dy) if id == playerId =>
           // Only handle movement for our own player
@@ -93,11 +101,7 @@ object DistributedGameStateManager:
           }
 
           // Always broadcast our current position to other managers
-          localWorld.playerById(playerId).foreach { ourPlayer =>
-            otherManagers.values.foreach { manager =>
-              manager ! PlayerMovement(playerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
-            }
-          }
+          broadcastMovement()
 
           Behaviors.same
 
@@ -163,11 +167,7 @@ object DistributedGameStateManager:
           context.log.info(s"Synchronizing world state with manager")
           localWorld = worldState
           // Optionally, notify this manager's player about the updated world state
-          localWorld.playerById(playerId).foreach { ourPlayer =>
-            otherManagers.values.foreach { manager =>
-              manager ! PlayerMovement(playerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
-            }
-          }
+          broadcastMovement()
           Behaviors.same
 
         case _ =>

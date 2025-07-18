@@ -15,7 +15,7 @@ object GameLauncher extends SimpleSwingApplication {
     loginView.addDefaultPlayers()
 
     loginView.setOnPlayersReady { playerInfos =>
-      DistributedGameManager.startNewGame(playerInfos)
+      DistributedGameController.startNewGame(playerInfos)
     }
 
     loginView.open()
@@ -25,7 +25,7 @@ object GameLauncher extends SimpleSwingApplication {
     val joinView = new JoinGameView()
 
     joinView.setOnJoinRequest { joinRequest =>
-      DistributedGameManager.joinExistingGame(joinRequest)
+      DistributedGameController.joinExistingGame(joinRequest)
     }
 
     joinView.open()
