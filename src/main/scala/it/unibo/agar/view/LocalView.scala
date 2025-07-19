@@ -5,15 +5,21 @@ import akka.util.Timeout
 import it.unibo.agar.controller.GameStateManager
 import it.unibo.agar.model.World
 import scala.concurrent.duration._
-import scala.concurrent.{ExecutionContext, Future}
-import scala.util.{Success, Failure}
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
+import scala.util.Success
+import scala.util.Failure
 
 import java.awt.Graphics2D
 import scala.swing.*
 import java.awt.event.WindowEvent
 import java.awt.event.WindowAdapter
 
-class LocalView(manager: ActorRef[GameStateManager.Command], playerId: String)(implicit system: akka.actor.typed.ActorSystem[_]) extends MainFrame:
+class LocalView(
+    manager: ActorRef[GameStateManager.Command],
+    playerId: String
+)(implicit system: akka.actor.typed.ActorSystem[_])
+    extends MainFrame:
 
   implicit val timeout: Timeout = 3.seconds
   private var currentWorld: World = World(400, 400, Seq.empty, Seq.empty) // Default empty world
@@ -50,13 +56,6 @@ class LocalView(manager: ActorRef[GameStateManager.Command], playerId: String)(i
   private val timer = new javax.swing.Timer(30, _ => updateWorld())
   timer.start()
 
-  // Add window closing listener to properly shutdown the timer
-  peer.addWindowListener(new WindowAdapter {
-    override def windowClosing(e: WindowEvent): Unit = {
-      shutdown()
-    }
-  })
-
   private def updateWorld(): Unit =
     // Check if we're shutting down or the actor system is terminated
     if (isShuttingDown || system.whenTerminated.isCompleted) {
@@ -79,21 +78,25 @@ class LocalView(manager: ActorRef[GameStateManager.Command], playerId: String)(i
           }
       }(system.executionContext)
     } catch {
-      case _: IllegalStateException => 
+      case _: IllegalStateException =>
         // Actor system is already shut down, stop trying to make calls
         shutdown()
     }
 
+  private def notifyDisconnection(): Unit = {
+    manager ! GameStateManager.PlayerLeft(playerId)
+    system.log.info(s"Player $playerId is disconnecting")
+  }
+
   def shutdown(): Unit = {
     if (!isShuttingDown) {
       isShuttingDown = true
+      notifyDisconnection() // Notify the game system about disconnection
       if (timer != null) {
         timer.stop()
       }
     }
   }
 
-  override def closeOperation(): Unit = {
+  override def closeOperation(): Unit =
     shutdown()
-    super.closeOperation()
-  }

@@ -27,8 +27,8 @@ import scala.util.Failure
 
 object GameController {
 
-  private val width = 1000
-  private val height = 1000
+  private val width = 800
+  private val height = 800
   private val numFoods = 100
   private val winningMass = 1000
   private val playerSpeed = 10
@@ -38,6 +38,7 @@ object GameController {
   private var isGameActive = false
   private var gameEnded = false
   private var winner: Option[(String, Double)] = None
+  private var _baseSystem: Option[ActorSystem[GameStateManager.Command]] = None
 
   // Store information about running games
   private var activeSystems: Map[String, ActorSystem[GameStateManager.Command]] = Map.empty
@@ -72,6 +73,7 @@ object GameController {
     globalView = Some(new GlobalView(baseSystem))
     globalView.foreach(_.open())
 
+    _baseSystem = Some(baseSystem)
     println("Empty game started successfully - players can now join")
   }
 
@@ -121,7 +123,9 @@ object GameController {
       // Create view for human player
       if (!joinRequest.isAI) {
         implicit val implicitSystem: ActorSystem[GameStateManager.Command] = newSystem
-        new LocalView(newSystem, newPlayer.id).open()
+        val localView = new LocalView(newSystem, newPlayer.id)
+        localViews += (newPlayer.id -> localView)
+        localView.open()
       }
 
       println(s"Player ${joinRequest.playerName} successfully joined the game")
@@ -148,8 +152,8 @@ object GameController {
   ): Unit = {
 
     // Get current world state from an existing system to synchronize the new player
-    if (activeSystems.nonEmpty) {
-      val existingSystem = activeSystems.values.head
+    if (_baseSystem.isDefined) {
+      val existingSystem = _baseSystem.get
 
       // Use ask pattern to get current world state
 
@@ -221,5 +225,4 @@ object GameController {
       JOptionPane.ERROR_MESSAGE
     )
   }
-
 }

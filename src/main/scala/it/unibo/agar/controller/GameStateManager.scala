@@ -23,6 +23,7 @@ object GameStateManager:
   case class RegisterManager(managerId: String, manager: ActorRef[Command]) extends Command
   case class PlayerJoined(playerId: String, player: Player) extends Command
   case class SyncWorldState(world: World) extends Command
+  case class PlayerLeft(playerId: String) extends Command
 
   private case class PlayerMovement(playerId: String, x: Double, y: Double, mass: Double) extends Command
   private case class PlayerEaten(playerId: Seq[String]) extends Command
@@ -55,7 +56,7 @@ object GameStateManager:
             val finalPlayer = playersEaten.foldLeft(playerAfterEating)((p, other) => p.grow(other))
 
             if (finalPlayer.mass >= winningMass) {
-              context.log.info(s"Player ${finalPlayer.id} reached winning mass: ${finalPlayer.mass}")
+              // context.log.info(s"Player ${finalPlayer.id} reached winning mass: ${finalPlayer.mass}")
               // Broadcast game end to all other managers
               otherManagers.values.foreach { manager =>
                 manager ! GameEnded(finalPlayer.id, finalPlayer.mass)
@@ -169,12 +170,26 @@ object GameStateManager:
           Behaviors.same
 
         case GameEnded(winnerId, winnerMass) =>
-          context.log.info(s"Game ended! Player $winnerId won with mass $winnerMass")
+          // context.log.info(s"Game ended! Player $winnerId won with mass $winnerMass")
           // Don't stop the actor immediately - let the controller handle the shutdown
           // The controller will detect the game end and properly shut down all systems
           // TODO handle game end logic, e.g., notify UI or reset state
           Behaviors.same
 
+        case PlayerLeft(leftPlayerId) =>
+          if (leftPlayerId == playerId) {
+            context.log.info(s"Player $leftPlayerId left the game, shutting down manager")
+            // Notify all other managers about this player's disconnection
+            otherManagers.values.foreach { manager =>
+              manager ! PlayerLeft(leftPlayerId)
+            }
+            context.system.terminate()
+            Behaviors.stopped
+          } else {
+            context.log.info(s"Player $leftPlayerId left the game, removing from world")
+            localWorld = localWorld.removePlayer(leftPlayerId)
+            Behaviors.same
+          }
         case _ =>
           Behaviors.same
       }

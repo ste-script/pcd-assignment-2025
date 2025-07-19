@@ -31,13 +31,6 @@ class GlobalView(manager: ActorRef[GameStateManager.Command])(implicit system: a
   private val timer = new javax.swing.Timer(30, _ => updateWorld())
   timer.start()
 
-  // Add window closing listener to properly shutdown the timer
-  peer.addWindowListener(new WindowAdapter {
-    override def windowClosing(e: WindowEvent): Unit = {
-      shutdown()
-    }
-  })
-
   private def updateWorld(): Unit =
     // Check if we're shutting down or the actor system is terminated
     if (isShuttingDown || system.whenTerminated.isCompleted) {
