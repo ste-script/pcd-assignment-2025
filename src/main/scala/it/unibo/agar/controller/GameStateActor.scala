@@ -1,11 +1,12 @@
-package it.unibo.agar.model
+package it.unibo.agar.controller
 
-import akka.actor.typed.ActorRef
-import akka.actor.typed.Behavior
+import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.Behaviors
+import it.unibo.agar.model.{EatingManager, Food, Player, World}
+
 import scala.util.Random
 
-object DistributedGameStateManager:
+object GameStateActor:
 
   sealed trait Command
 

@@ -2,7 +2,8 @@ package it.unibo.agar.view
 
 import akka.actor.typed.ActorRef
 import akka.util.Timeout
-import it.unibo.agar.model.{DistributedGameStateManager, World}
+import it.unibo.agar.controller.GameStateActor
+import it.unibo.agar.model.World
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Success, Failure}
@@ -12,7 +13,7 @@ import scala.swing.*
 import java.awt.event.WindowEvent
 import java.awt.event.WindowAdapter
 
-class LocalView(manager: ActorRef[DistributedGameStateManager.Command], playerId: String)(implicit system: akka.actor.typed.ActorSystem[_]) extends MainFrame:
+class LocalView(manager: ActorRef[GameStateActor.Command], playerId: String)(implicit system: akka.actor.typed.ActorSystem[_]) extends MainFrame:
 
   implicit val timeout: Timeout = 3.seconds
   private var currentWorld: World = World(400, 400, Seq.empty, Seq.empty) // Default empty world
@@ -40,7 +41,7 @@ class LocalView(manager: ActorRef[DistributedGameStateManager.Command], playerId
         playerOpt.foreach: player =>
           val dx = (mousePos.x - size.width / 2) * 0.01
           val dy = (mousePos.y - size.height / 2) * 0.01
-          manager ! DistributedGameStateManager.MovePlayer(playerId, dx, dy)
+          manager ! GameStateActor.MovePlayer(playerId, dx, dy)
         repaint()
       }
     }
@@ -65,7 +66,7 @@ class LocalView(manager: ActorRef[DistributedGameStateManager.Command], playerId
     import akka.actor.typed.scaladsl.AskPattern._
 
     try {
-      val worldFuture: Future[World] = manager.ask(DistributedGameStateManager.GetWorld.apply)
+      val worldFuture: Future[World] = manager.ask(GameStateActor.GetWorld.apply)
       worldFuture.onComplete {
         case Success(world) =>
           if (!isShuttingDown) {

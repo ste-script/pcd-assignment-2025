@@ -2,9 +2,11 @@ package it.unibo.agar.model
 
 import akka.actor.typed.ActorRef
 import akka.util.Timeout
-import scala.concurrent.duration._
+import it.unibo.agar.controller.GameStateActor
+
+import scala.concurrent.duration.*
 import scala.concurrent.Future
-import scala.util.{Success, Failure}
+import scala.util.{Failure, Success}
 
 /** Object responsible for AI movement logic, separate from the game state management */
 object AIMovement:
@@ -32,11 +34,11 @@ object AIMovement:
     * @param system
     *   The actor system for scheduling
     */
-  def moveAI(name: String, gameManager: ActorRef[DistributedGameStateManager.Command])(implicit system: akka.actor.typed.ActorSystem[_]): Unit =
+  def moveAI(name: String, gameManager: ActorRef[GameStateActor.Command])(implicit system: akka.actor.typed.ActorSystem[_]): Unit =
     import akka.actor.typed.scaladsl.AskPattern._
 
     // Request the current world state from the game manager
-    val worldFuture: Future[World] = gameManager.ask(DistributedGameStateManager.GetWorld.apply)
+    val worldFuture: Future[World] = gameManager.ask(GameStateActor.GetWorld.apply)
 
     worldFuture.onComplete {
       case Success(world) =>
@@ -55,7 +57,7 @@ object AIMovement:
             if (distance > minDistance) {
               val normalizedDx = (dx / distance) * moveSpeed
               val normalizedDy = (dy / distance) * moveSpeed
-              gameManager ! DistributedGameStateManager.MovePlayer(name, normalizedDx, normalizedDy)
+              gameManager ! GameStateActor.MovePlayer(name, normalizedDx, normalizedDy)
             }
           // If very close to food, stop moving to prevent oscillation
 
@@ -63,7 +65,7 @@ object AIMovement:
             // No food available - implement random movement or stay still
             val randomDx = (math.random() - 0.5) * 0.1
             val randomDy = (math.random() - 0.5) * 0.1
-            gameManager ! DistributedGameStateManager.MovePlayer(name, randomDx, randomDy)
+            gameManager ! GameStateActor.MovePlayer(name, randomDx, randomDy)
 
           case _ => // Do nothing if AI doesn't exist
       case Failure(exception) =>

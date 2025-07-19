@@ -4,7 +4,6 @@ import akka.actor.typed.ActorRef
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.Scheduler
 import it.unibo.agar.model.AIMovement
-import it.unibo.agar.model.DistributedGameStateManager
 import it.unibo.agar.model.GameInitializer
 import it.unibo.agar.model.World
 import it.unibo.agar.view.GlobalView
@@ -25,7 +24,7 @@ import akka.util.Timeout
 import scala.concurrent.duration._
 import scala.util.{Success, Failure}
 
-object DistributedGameController {
+object GameController {
 
   private val width = 1000
   private val height = 1000
@@ -39,7 +38,7 @@ object DistributedGameController {
   private var winner: Option[(String, Double)] = None
 
   // Store information about running games
-  private var activeSystems: Map[String, ActorSystem[DistributedGameStateManager.Command]] = Map.empty
+  private var activeSystems: Map[String, ActorSystem[GameStateActor.Command]] = Map.empty
   private var aiPlayers: Set[String] = Set.empty
   
   // Track views for proper shutdown
@@ -119,7 +118,7 @@ object DistributedGameController {
 
       // Create view for human player
       if (!joinRequest.isAI) {
-        implicit val implicitSystem: ActorSystem[DistributedGameStateManager.Command] = newSystem
+        implicit val implicitSystem: ActorSystem[GameStateActor.Command] = newSystem
         new LocalView(newSystem, newPlayer.id).open()
       }
 
@@ -132,7 +131,7 @@ object DistributedGameController {
   }
 
   private def startGameSystems(players: Seq[it.unibo.agar.model.Player]): Unit = {
-    var systems: List[ActorSystem[DistributedGameStateManager.Command]] = List.empty
+    var systems: List[ActorSystem[GameStateActor.Command]] = List.empty
 
     // Create ActorSystems for each player
     for ((player, index) <- players.zipWithIndex) {
@@ -152,7 +151,7 @@ object DistributedGameController {
       player: it.unibo.agar.model.Player,
       port: Int,
       isInitialGameSetup: Boolean = false
-  ): ActorSystem[DistributedGameStateManager.Command] = {
+  ): ActorSystem[GameStateActor.Command] = {
 
     // For initial game setup, all players get full food
     // For players joining existing games, create minimal world without food
@@ -164,7 +163,7 @@ object DistributedGameController {
       World(width, height, Seq(player), Seq.empty)
     }
 
-    val managerBehavior = DistributedGameStateManager(player.id, world, playerSpeed, winningMass)
+    val managerBehavior = GameStateActor(player.id, world, playerSpeed, winningMass)
     it.unibo.agar.startup("agario", port)(managerBehavior)
   }
 
@@ -174,7 +173,7 @@ object DistributedGameController {
       for ((otherPlayer, otherIndex) <- players.zipWithIndex if otherIndex != index) {
         val otherSystem = activeSystems(otherPlayer.id)
         println(s"Registering ${player.id} with ${otherPlayer.id}")
-        currentSystem ! DistributedGameStateManager.RegisterManager(otherPlayer.id, otherSystem)
+        currentSystem ! GameStateActor.RegisterManager(otherPlayer.id, otherSystem)
       }
     }
 
@@ -182,7 +181,7 @@ object DistributedGameController {
 
   private def registerNewPlayerWithExistingSystems(
       newPlayerId: String,
-      newSystem: ActorSystem[DistributedGameStateManager.Command]
+      newSystem: ActorSystem[GameStateActor.Command]
   ): Unit = {
 
     // Get current world state from an existing system to synchronize the new player
@@ -196,11 +195,11 @@ object DistributedGameController {
       implicit val scheduler: Scheduler = existingSystem.scheduler
       implicit val ec: ExecutionContextExecutor = existingSystem.executionContext
 
-      val worldFuture = existingSystem ? DistributedGameStateManager.GetWorld.apply
+      val worldFuture = existingSystem ? GameStateActor.GetWorld.apply
       worldFuture.onComplete {
         case Success(currentWorld) =>
           // Sync the new system with current world state
-          newSystem ! DistributedGameStateManager.SyncWorldState(currentWorld)
+          newSystem ! GameStateActor.SyncWorldState(currentWorld)
 
           // Create new player object
           val newPlayer = it.unibo.agar.model.Player(
@@ -212,7 +211,7 @@ object DistributedGameController {
 
           // Notify all existing systems about the new player
           for ((_, existingSystem) <- activeSystems)
-            existingSystem ! DistributedGameStateManager.PlayerJoined(newPlayerId, newPlayer)
+            existingSystem ! GameStateActor.PlayerJoined(newPlayerId, newPlayer)
 
           println(s"Successfully synchronized new player $newPlayerId with existing game state")
 
@@ -224,10 +223,10 @@ object DistributedGameController {
     // Register new player with all existing systems
     for ((existingPlayerId, existingSystem) <- activeSystems) {
       // Register new player with existing system
-      existingSystem ! DistributedGameStateManager.RegisterManager(newPlayerId, newSystem)
+      existingSystem ! GameStateActor.RegisterManager(newPlayerId, newSystem)
 
       // Register existing player with new system
-      newSystem ! DistributedGameStateManager.RegisterManager(existingPlayerId, existingSystem)
+      newSystem ! GameStateActor.RegisterManager(existingPlayerId, existingSystem)
     }
   }
 
@@ -249,7 +248,7 @@ object DistributedGameController {
 
           // Send tick to all active systems
           for (system <- activeSystems.values)
-            system ! DistributedGameStateManager.Tick
+            system ! GameStateActor.Tick
 
           // Update UI
           onEDT(Window.getWindows.foreach(_.repaint()))
@@ -265,7 +264,7 @@ object DistributedGameController {
     if (activeSystems.nonEmpty) {
       // Create global view using first system
       val globalSystem = activeSystems.values.head
-      implicit val implicitSystem: ActorSystem[DistributedGameStateManager.Command] = globalSystem
+      implicit val implicitSystem: ActorSystem[GameStateActor.Command] = globalSystem
       globalView = Some(new GlobalView(globalSystem))
       globalView.foreach(_.open())
 
