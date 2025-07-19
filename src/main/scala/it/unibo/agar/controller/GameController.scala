@@ -9,7 +9,6 @@ import it.unibo.agar.model.World
 import it.unibo.agar.view.GlobalView
 import it.unibo.agar.view.JoinGameRequest
 import it.unibo.agar.view.LocalView
-import it.unibo.agar.view.PlayerInfo
 
 import java.awt.Window
 import java.util.Timer
@@ -22,7 +21,8 @@ import scala.concurrent.ExecutionContextExecutor
 import akka.actor.typed.scaladsl.AskPattern._
 import akka.util.Timeout
 import scala.concurrent.duration._
-import scala.util.{Success, Failure}
+import scala.util.Success
+import scala.util.Failure
 
 object GameController {
 
@@ -40,7 +40,7 @@ object GameController {
   // Store information about running games
   private var activeSystems: Map[String, ActorSystem[GameStateManager.Command]] = Map.empty
   private var aiPlayers: Set[String] = Set.empty
-  
+
   // Track views for proper shutdown
   private var globalView: Option[GlobalView] = None
   private var localViews: Map[String, LocalView] = Map.empty
@@ -73,32 +73,6 @@ object GameController {
     println("Empty game started successfully - players can now join")
   }
 
-  def startNewGame(playerInfos: List[PlayerInfo]): Unit = {
-    println(s"Starting new distributed game with ${playerInfos.length} players")
-
-    // Create initial players
-    val players = playerInfos.map { info =>
-      it.unibo.agar.model.Player(
-        id = info.name,
-        x = Random.nextInt(width).toDouble,
-        y = Random.nextInt(height).toDouble,
-        mass = 120.0
-      )
-    }
-
-    // Track AI players
-    aiPlayers = playerInfos.filter(_.isAI).map(_.name).toSet
-
-    // Create and start game systems
-    startGameSystems(players)
-
-    // Mark game as active
-    isGameActive = true
-
-    // Create views for human players
-    createInitialViews(players)
-  }
-
   def joinExistingGame(joinRequest: JoinGameRequest): Unit = {
     if (!isGameActive) {
       showError("No active game found. Please start a new game first.")
@@ -123,14 +97,13 @@ object GameController {
       )
 
       // Get current world state from an existing system
-      val existingSystem = activeSystems.values.headOption
-      if (existingSystem.isEmpty) {
+      if (activeSystems.values.headOption.isEmpty) {
         showError("Unable to connect to existing game.")
         return
       }
 
       // Create new system for the joining player
-      val nextPort = 25251 + activeSystems.size
+      val nextPort = 25250 + activeSystems.size
       val newSystem = createPlayerSystem(newPlayer, nextPort)
 
       // Register the new system with all existing systems
@@ -158,23 +131,6 @@ object GameController {
     }
   }
 
-  private def startGameSystems(players: Seq[it.unibo.agar.model.Player]): Unit = {
-    var systems: List[ActorSystem[GameStateManager.Command]] = List.empty
-
-    // Create ActorSystems for each player
-    for ((player, index) <- players.zipWithIndex) {
-      val system = createPlayerSystem(player, 25251 + index, isInitialGameSetup = true)
-      systems = systems :+ system
-      activeSystems += (player.id -> system)
-    }
-
-    // Register all systems with each other
-    registerAllSystems(players)
-
-    // Start game timer
-    startGameTimer()
-  }
-
   private def createPlayerSystem(
       player: it.unibo.agar.model.Player,
       port: Int,
@@ -195,18 +151,6 @@ object GameController {
     it.unibo.agar.startup("agario", port)(managerBehavior)
   }
 
-  private def registerAllSystems(players: Seq[it.unibo.agar.model.Player]): Unit = {
-    for ((player, index) <- players.zipWithIndex) {
-      val currentSystem = activeSystems(player.id)
-      for ((otherPlayer, otherIndex) <- players.zipWithIndex if otherIndex != index) {
-        val otherSystem = activeSystems(otherPlayer.id)
-        println(s"Registering ${player.id} with ${otherPlayer.id}")
-        currentSystem ! GameStateManager.RegisterManager(otherPlayer.id, otherSystem)
-      }
-    }
-
-  }
-
   private def registerNewPlayerWithExistingSystems(
       newPlayerId: String,
       newSystem: ActorSystem[GameStateManager.Command]
@@ -217,7 +161,6 @@ object GameController {
       val existingSystem = activeSystems.values.head
 
       // Use ask pattern to get current world state
-
 
       implicit val timeout: Timeout = 3.seconds
       implicit val scheduler: Scheduler = existingSystem.scheduler
@@ -287,28 +230,6 @@ object GameController {
     gameTimer.scheduleAtFixedRate(task, 0, 30) // every 30ms
   }
 
-  private def createInitialViews(players: Seq[it.unibo.agar.model.Player]): Unit = {
-    // Wait for systems to be ready
-    if (activeSystems.nonEmpty) {
-      // Create global view using first system
-      val globalSystem = activeSystems.values.head
-      implicit val implicitSystem: ActorSystem[GameStateManager.Command] = globalSystem
-      globalView = Some(new GlobalView(globalSystem))
-      globalView.foreach(_.open())
-
-      // Create local views for human players
-      for (player <- players) {
-        if (!aiPlayers.contains(player.id)) {
-          activeSystems.get(player.id).foreach { playerSystem =>
-            val localView = new LocalView(playerSystem, player.id)
-            localViews += (player.id -> localView)
-            localView.open()
-          }
-        }
-      }
-    }
-  }
-
   private def showError(message: String): Unit = {
     JOptionPane.showMessageDialog(
       null,
@@ -317,79 +238,5 @@ object GameController {
       JOptionPane.ERROR_MESSAGE
     )
   }
-
-  def shutdown(): Unit = {
-    if (gameTimer != null) {
-      gameTimer.cancel()
-    }
-
-    // Shutdown all views before terminating actor systems
-    globalView.foreach(_.shutdown())
-    for ((_, localView) <- localViews) {
-      localView.shutdown()
-    }
-    
-    // Close all views
-    globalView.foreach(_.dispose())
-    for ((_, localView) <- localViews) {
-      localView.dispose()
-    }
-
-    // Clear view references
-    globalView = None
-    localViews = Map.empty
-
-    activeSystems.values.foreach(_.terminate())
-    activeSystems = Map.empty
-    aiPlayers = Set.empty
-    isGameActive = false
-    gameEnded = false
-    winner = None
-  }
-
-  private def handleGameEnd(winnerId: String, winnerMass: Double): Unit = {
-    if (!gameEnded) {
-      gameEnded = true
-      winner = Some((winnerId, winnerMass))
-
-      // Stop the game timer
-      if (gameTimer != null) {
-        gameTimer.cancel()
-      }
-
-      // Show game end message
-      onEDT {
-        showGameEndMessage(winnerId, winnerMass)
-      }
-
-      println(s"Game ended! Player $winnerId won with mass $winnerMass")
-    }
-  }
-
-  private def showGameEndMessage(winnerId: String, winnerMass: Double): Unit = {
-    val message = s"Game Over!\n\nWinner: $winnerId\nFinal Mass: ${winnerMass.toInt}\n\nWould you like to start a new game?"
-    val result = JOptionPane.showConfirmDialog(
-      null,
-      message,
-      "Game Over",
-      JOptionPane.YES_NO_OPTION,
-      JOptionPane.INFORMATION_MESSAGE
-    )
-
-    if (result == JOptionPane.YES_OPTION) {
-      // Reset game state and show main menu
-      shutdown()
-      // You could restart the game launcher here if needed
-    } else {
-      // Exit the application
-      System.exit(0)
-    }
-  }
-
-  def isGameEnded: Boolean = gameEnded
-  def getWinner: Option[(String, Double)] = winner
-
-  def isActive: Boolean = isGameActive
-  def getActivePlayers: Set[String] = activeSystems.keySet
 
 }

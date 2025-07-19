@@ -1,8 +1,12 @@
 package it.unibo.agar.controller
 
-import akka.actor.typed.{ActorRef, Behavior}
+import akka.actor.typed.ActorRef
+import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.Behaviors
-import it.unibo.agar.model.{EatingManager, Food, Player, World}
+import it.unibo.agar.model.EatingManager
+import it.unibo.agar.model.Food
+import it.unibo.agar.model.Player
+import it.unibo.agar.model.World
 
 import scala.util.Random
 
@@ -23,7 +27,6 @@ object GameStateManager:
   private case class PlayerMovement(playerId: String, x: Double, y: Double, mass: Double) extends Command
   private case class PlayerEaten(playerId: Seq[String]) extends Command
   private case class FoodEaten(foodIds: Seq[String], newFood: Seq[Food]) extends Command
-  private case class PlayerLeft(playerId: String) extends Command
   private case class GameEnded(winnerId: String, winnerMass: Double) extends Command
 
   def apply(playerId: String, world: World, speed: Double, winningMass: Int): Behavior[Command] =
@@ -126,11 +129,6 @@ object GameStateManager:
             manager ! PlayerMovement(playerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
           }
 
-          // Send current world state (all players) to the new manager
-          localWorld.players.foreach { player =>
-            manager ! PlayerMovement(player.id, player.x, player.y, player.mass)
-          }
-
           // Only the first manager (or a designated manager) should send food state
           // to prevent food duplication when multiple managers register with a new one
           // We'll let the SyncWorldState message handle food synchronization instead
@@ -143,8 +141,8 @@ object GameStateManager:
             case Some(player) =>
               localWorld.updatePlayer(player.copy(x = x, y = y, mass = mass))
             case None =>
-              val newPlayer = Player(id, x, y, mass)
-              localWorld.copy(players = localWorld.players :+ newPlayer)
+              context.log.warn(s"Received movement for unknown player $id")
+              localWorld
           }
           Behaviors.same
 
@@ -161,19 +159,6 @@ object GameStateManager:
         case PlayerJoined(newPlayerId, player) =>
           context.log.info(s"Player $newPlayerId joined the game")
           localWorld = localWorld.addPlayer(player)
-          // Notify other managers about the new player
-          otherManagers.values.foreach { manager =>
-            manager ! PlayerMovement(player.id, player.x, player.y, player.mass)
-          }
-          Behaviors.same
-
-        case PlayerLeft(leftPlayerId) =>
-          context.log.info(s"Player $leftPlayerId left the game")
-          localWorld = localWorld.removePlayer(leftPlayerId)
-          // Notify other managers about the player leaving
-          otherManagers.values.foreach { manager =>
-            manager ! PlayerEaten(Seq(leftPlayerId))
-          }
           Behaviors.same
 
         case SyncWorldState(worldState) =>
@@ -187,7 +172,7 @@ object GameStateManager:
           context.log.info(s"Game ended! Player $winnerId won with mass $winnerMass")
           // Don't stop the actor immediately - let the controller handle the shutdown
           // The controller will detect the game end and properly shut down all systems
-          //TODO handle game end logic, e.g., notify UI or reset state
+          // TODO handle game end logic, e.g., notify UI or reset state
           Behaviors.same
 
         case _ =>
