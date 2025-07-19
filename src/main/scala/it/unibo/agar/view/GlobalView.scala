@@ -2,7 +2,7 @@ package it.unibo.agar.view
 
 import akka.actor.typed.ActorRef
 import akka.util.Timeout
-import it.unibo.agar.controller.GameStateActor
+import it.unibo.agar.controller.GameStateManager
 import it.unibo.agar.model.World
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
@@ -14,7 +14,7 @@ import scala.swing.*
 import java.awt.event.WindowEvent
 import java.awt.event.WindowAdapter
 
-class GlobalView(manager: ActorRef[GameStateActor.Command])(implicit system: akka.actor.typed.ActorSystem[_]) extends MainFrame:
+class GlobalView(manager: ActorRef[GameStateManager.Command])(implicit system: akka.actor.typed.ActorSystem[_]) extends MainFrame:
 
   implicit val timeout: Timeout = 3.seconds
   private var currentWorld: World = World(800, 800, Seq.empty, Seq.empty) // Default empty world
@@ -47,7 +47,7 @@ class GlobalView(manager: ActorRef[GameStateActor.Command])(implicit system: akk
     import akka.actor.typed.scaladsl.AskPattern._
 
     try {
-      val worldFuture: Future[World] = manager.ask(GameStateActor.GetWorld.apply)
+      val worldFuture: Future[World] = manager.ask(GameStateManager.GetWorld.apply)
       worldFuture.onComplete {
         case Success(world) =>
           if (!isShuttingDown) {

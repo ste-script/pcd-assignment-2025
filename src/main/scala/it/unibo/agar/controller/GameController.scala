@@ -38,7 +38,7 @@ object GameController {
   private var winner: Option[(String, Double)] = None
 
   // Store information about running games
-  private var activeSystems: Map[String, ActorSystem[GameStateActor.Command]] = Map.empty
+  private var activeSystems: Map[String, ActorSystem[GameStateManager.Command]] = Map.empty
   private var aiPlayers: Set[String] = Set.empty
   
   // Track views for proper shutdown
@@ -118,7 +118,7 @@ object GameController {
 
       // Create view for human player
       if (!joinRequest.isAI) {
-        implicit val implicitSystem: ActorSystem[GameStateActor.Command] = newSystem
+        implicit val implicitSystem: ActorSystem[GameStateManager.Command] = newSystem
         new LocalView(newSystem, newPlayer.id).open()
       }
 
@@ -131,7 +131,7 @@ object GameController {
   }
 
   private def startGameSystems(players: Seq[it.unibo.agar.model.Player]): Unit = {
-    var systems: List[ActorSystem[GameStateActor.Command]] = List.empty
+    var systems: List[ActorSystem[GameStateManager.Command]] = List.empty
 
     // Create ActorSystems for each player
     for ((player, index) <- players.zipWithIndex) {
@@ -151,7 +151,7 @@ object GameController {
       player: it.unibo.agar.model.Player,
       port: Int,
       isInitialGameSetup: Boolean = false
-  ): ActorSystem[GameStateActor.Command] = {
+  ): ActorSystem[GameStateManager.Command] = {
 
     // For initial game setup, all players get full food
     // For players joining existing games, create minimal world without food
@@ -163,7 +163,7 @@ object GameController {
       World(width, height, Seq(player), Seq.empty)
     }
 
-    val managerBehavior = GameStateActor(player.id, world, playerSpeed, winningMass)
+    val managerBehavior = GameStateManager(player.id, world, playerSpeed, winningMass)
     it.unibo.agar.startup("agario", port)(managerBehavior)
   }
 
@@ -173,7 +173,7 @@ object GameController {
       for ((otherPlayer, otherIndex) <- players.zipWithIndex if otherIndex != index) {
         val otherSystem = activeSystems(otherPlayer.id)
         println(s"Registering ${player.id} with ${otherPlayer.id}")
-        currentSystem ! GameStateActor.RegisterManager(otherPlayer.id, otherSystem)
+        currentSystem ! GameStateManager.RegisterManager(otherPlayer.id, otherSystem)
       }
     }
 
@@ -181,7 +181,7 @@ object GameController {
 
   private def registerNewPlayerWithExistingSystems(
       newPlayerId: String,
-      newSystem: ActorSystem[GameStateActor.Command]
+      newSystem: ActorSystem[GameStateManager.Command]
   ): Unit = {
 
     // Get current world state from an existing system to synchronize the new player
@@ -195,11 +195,11 @@ object GameController {
       implicit val scheduler: Scheduler = existingSystem.scheduler
       implicit val ec: ExecutionContextExecutor = existingSystem.executionContext
 
-      val worldFuture = existingSystem ? GameStateActor.GetWorld.apply
+      val worldFuture = existingSystem ? GameStateManager.GetWorld.apply
       worldFuture.onComplete {
         case Success(currentWorld) =>
           // Sync the new system with current world state
-          newSystem ! GameStateActor.SyncWorldState(currentWorld)
+          newSystem ! GameStateManager.SyncWorldState(currentWorld)
 
           // Create new player object
           val newPlayer = it.unibo.agar.model.Player(
@@ -211,7 +211,7 @@ object GameController {
 
           // Notify all existing systems about the new player
           for ((_, existingSystem) <- activeSystems)
-            existingSystem ! GameStateActor.PlayerJoined(newPlayerId, newPlayer)
+            existingSystem ! GameStateManager.PlayerJoined(newPlayerId, newPlayer)
 
           println(s"Successfully synchronized new player $newPlayerId with existing game state")
 
@@ -223,10 +223,10 @@ object GameController {
     // Register new player with all existing systems
     for ((existingPlayerId, existingSystem) <- activeSystems) {
       // Register new player with existing system
-      existingSystem ! GameStateActor.RegisterManager(newPlayerId, newSystem)
+      existingSystem ! GameStateManager.RegisterManager(newPlayerId, newSystem)
 
       // Register existing player with new system
-      newSystem ! GameStateActor.RegisterManager(existingPlayerId, existingSystem)
+      newSystem ! GameStateManager.RegisterManager(existingPlayerId, existingSystem)
     }
   }
 
@@ -248,7 +248,7 @@ object GameController {
 
           // Send tick to all active systems
           for (system <- activeSystems.values)
-            system ! GameStateActor.Tick
+            system ! GameStateManager.Tick
 
           // Update UI
           onEDT(Window.getWindows.foreach(_.repaint()))
@@ -264,7 +264,7 @@ object GameController {
     if (activeSystems.nonEmpty) {
       // Create global view using first system
       val globalSystem = activeSystems.values.head
-      implicit val implicitSystem: ActorSystem[GameStateActor.Command] = globalSystem
+      implicit val implicitSystem: ActorSystem[GameStateManager.Command] = globalSystem
       globalView = Some(new GlobalView(globalSystem))
       globalView.foreach(_.open())
 

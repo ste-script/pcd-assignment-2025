@@ -6,7 +6,7 @@ import it.unibo.agar.model.{EatingManager, Food, Player, World}
 
 import scala.util.Random
 
-object GameStateActor:
+object GameStateManager:
 
   sealed trait Command
 
