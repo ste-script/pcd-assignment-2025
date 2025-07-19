@@ -7,7 +7,7 @@ import java.awt.{Color, Font}
 
 object MainMenuView {
 
-  def apply(startNewGame: () => Unit, joinExistingGame: () => Unit): MainFrame = new MainFrame {
+  def apply(joinExistingGame: () => Unit): MainFrame = new MainFrame {
     title = "Agar.io - Game Launcher"
     preferredSize = new Dimension(400, 250)
     resizable = false
@@ -22,26 +22,15 @@ object MainMenuView {
       horizontalAlignment = Alignment.Center
     }
 
-    // Buttons
-    val newGameButton: Button = new Button("Start New Game") {
-      font = new Font("Arial", Font.BOLD, 16)
-      preferredSize = new Dimension(200, 40)
-      background = new Color(0, 150, 0)
-      foreground = Color.WHITE
-    }
-
-    val joinGameButton: Button = new Button("Join Existing Game") {
+    // Join Game Button
+    val joinGameButton: Button = new Button("Join Game") {
       font = new Font("Arial", Font.BOLD, 16)
       preferredSize = new Dimension(200, 40)
       background = new Color(0, 100, 200)
       foreground = Color.WHITE
     }
 
-    // Event handlers
-    newGameButton.reactions += { case ButtonClicked(_) =>
-      startNewGame()
-    }
-
+    // Event handler
     joinGameButton.reactions += { case ButtonClicked(_) =>
       joinExistingGame()
     }
@@ -49,8 +38,6 @@ object MainMenuView {
     // Layout
     mainPanel.contents += titleLabel
     mainPanel.contents += Swing.VStrut(30)
-    mainPanel.contents += newGameButton
-    mainPanel.contents += Swing.VStrut(15)
     mainPanel.contents += joinGameButton
 
     contents = mainPanel

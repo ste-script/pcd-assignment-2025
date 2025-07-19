@@ -45,6 +45,34 @@ object GameController {
   private var globalView: Option[GlobalView] = None
   private var localViews: Map[String, LocalView] = Map.empty
 
+  def startEmptyGame(): Unit = {
+    println("Starting empty game - ready for players to join")
+
+    // Initialize empty world with just food
+    val emptyWorld = World(width, height, Seq.empty, GameInitializer.initialFoods(numFoods, width, height))
+
+    // Create a base system to maintain the world state
+    val baseSystem = it.unibo.agar.startup("agario", 25250)(
+      GameStateManager("__server__", emptyWorld, playerSpeed, winningMass)
+    )
+
+    // Store the base system
+    activeSystems += ("__server__" -> baseSystem)
+
+    // Mark game as active
+    isGameActive = true
+
+    // Start game timer for world updates
+    startGameTimer()
+
+    // Create and open global view with the empty game
+    implicit val implicitSystem: ActorSystem[GameStateManager.Command] = baseSystem
+    globalView = Some(new GlobalView(baseSystem))
+    globalView.foreach(_.open())
+
+    println("Empty game started successfully - players can now join")
+  }
+
   def startNewGame(playerInfos: List[PlayerInfo]): Unit = {
     println(s"Starting new distributed game with ${playerInfos.length} players")
 

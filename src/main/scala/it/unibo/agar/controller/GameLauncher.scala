@@ -7,19 +7,11 @@ import it.unibo.agar.view.MainMenuView
 
 object GameLauncher extends SimpleSwingApplication {
 
+  // Start the game automatically with no players when the launcher starts
+  GameController.startEmptyGame()
+
   override def top: Frame =
-    MainMenuView(startNewGame, joinExistingGame)
-
-  private def startNewGame(): Unit = {
-    val loginView = new LoginView()
-    loginView.addDefaultPlayers()
-
-    loginView.setOnPlayersReady { playerInfos =>
-      GameController.startNewGame(playerInfos)
-    }
-
-    loginView.open()
-  }
+    MainMenuView(joinExistingGame)
 
   private def joinExistingGame(): Unit = {
     val joinView = new JoinGameView()
