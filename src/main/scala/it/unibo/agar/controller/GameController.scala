@@ -5,6 +5,7 @@ import akka.actor.typed.ActorSystem
 import akka.actor.typed.Scheduler
 import it.unibo.agar.model.AIMovement
 import it.unibo.agar.model.GameInitializer
+import it.unibo.agar.model.Player
 import it.unibo.agar.model.World
 import it.unibo.agar.view.GlobalView
 import it.unibo.agar.view.JoinGameRequest
@@ -17,10 +18,10 @@ import scala.swing.Swing.onEDT
 import scala.util.Random
 import javax.swing.JOptionPane
 import scala.concurrent.ExecutionContextExecutor
-
-import akka.actor.typed.scaladsl.AskPattern._
+import akka.actor.typed.scaladsl.AskPattern.*
 import akka.util.Timeout
-import scala.concurrent.duration._
+
+import scala.concurrent.duration.*
 import scala.util.Success
 import scala.util.Failure
 
@@ -31,6 +32,7 @@ object GameController {
   private val numFoods = 100
   private val winningMass = 1000
   private val playerSpeed = 10
+  private val initialNetworkPort = 25251
 
   private var gameTimer: Timer = null
   private var isGameActive = false
@@ -52,7 +54,7 @@ object GameController {
     val emptyWorld = World(width, height, Seq.empty, GameInitializer.initialFoods(numFoods, width, height))
 
     // Create a base system to maintain the world state
-    val baseSystem = it.unibo.agar.startup("agario", 25250)(
+    val baseSystem = it.unibo.agar.startup("agario", initialNetworkPort)(
       GameStateManager("__server__", emptyWorld, playerSpeed, winningMass)
     )
 
@@ -103,14 +105,13 @@ object GameController {
       }
 
       // Create new system for the joining player
-      val nextPort = 25250 + activeSystems.size
+      val nextPort = initialNetworkPort + activeSystems.size
       val newSystem = createPlayerSystem(newPlayer, nextPort)
-
-      // Register the new system with all existing systems
-      registerNewPlayerWithExistingSystems(newPlayer.id, newSystem)
 
       // Add to active systems
       activeSystems += (newPlayer.id -> newSystem)
+      // Register the new system with all existing systems
+      registerNewPlayerWithExistingSystems(newPlayer, newSystem)
 
       // Track AI players
       if (joinRequest.isAI) {
@@ -133,26 +134,16 @@ object GameController {
 
   private def createPlayerSystem(
       player: it.unibo.agar.model.Player,
-      port: Int,
-      isInitialGameSetup: Boolean = false
+      port: Int
   ): ActorSystem[GameStateManager.Command] = {
-
-    // For initial game setup, all players get full food
-    // For players joining existing games, create minimal world without food
-    val world = if (isInitialGameSetup) {
-      // Initial game setup - create world with initial food for all players
-      World(width, height, Seq(player), GameInitializer.initialFoods(numFoods, width, height))
-    } else {
-      // Joining player - create minimal world without food, will be synchronized later
-      World(width, height, Seq(player), Seq.empty)
-    }
-
-    val managerBehavior = GameStateManager(player.id, world, playerSpeed, winningMass)
+    // Joining player - create minimal world without food, will be synchronized later
+    val managerBehavior =
+      GameStateManager(player.id, World(width, height, Seq(player), Seq.empty), playerSpeed, winningMass)
     it.unibo.agar.startup("agario", port)(managerBehavior)
   }
 
   private def registerNewPlayerWithExistingSystems(
-      newPlayerId: String,
+      newPlayer: Player,
       newSystem: ActorSystem[GameStateManager.Command]
   ): Unit = {
 
@@ -172,29 +163,21 @@ object GameController {
           // Sync the new system with current world state
           newSystem ! GameStateManager.SyncWorldState(currentWorld)
 
-          // Create new player object
-          val newPlayer = it.unibo.agar.model.Player(
-            id = newPlayerId,
-            x = scala.util.Random.nextInt(width).toDouble,
-            y = scala.util.Random.nextInt(height).toDouble,
-            mass = 120.0
-          )
-
           // Notify all existing systems about the new player
           for ((_, existingSystem) <- activeSystems)
-            existingSystem ! GameStateManager.PlayerJoined(newPlayerId, newPlayer)
+            existingSystem ! GameStateManager.PlayerJoined(newPlayer.id, newPlayer)
 
-          println(s"Successfully synchronized new player $newPlayerId with existing game state")
+          println(s"Successfully synchronized new player ${newPlayer.id}  with existing game state")
 
         case Failure(exception) =>
-          println(s"Failed to synchronize new player $newPlayerId: ${exception.getMessage}")
+          println(s"Failed to synchronize new player ${newPlayer.id}: ${exception.getMessage}")
       }
     }
 
     // Register new player with all existing systems
     for ((existingPlayerId, existingSystem) <- activeSystems) {
       // Register new player with existing system
-      existingSystem ! GameStateManager.RegisterManager(newPlayerId, newSystem)
+      existingSystem ! GameStateManager.RegisterManager(newPlayer.id, newSystem)
 
       // Register existing player with new system
       newSystem ! GameStateManager.RegisterManager(existingPlayerId, existingSystem)

@@ -5,7 +5,7 @@ import scala.swing.event.*
 import java.awt.{Color, Font}
 import javax.swing.{BorderFactory, JOptionPane}
 
-case class JoinGameRequest(playerName: String, isAI: Boolean, gamePort: Int)
+case class JoinGameRequest(playerName: String, isAI: Boolean)
 
 class JoinGameView extends MainFrame {
   
@@ -76,16 +76,6 @@ class JoinGameView extends MainFrame {
       contents += Swing.HGlue
     }
     
-    // Game port input
-    val portPanel = new BoxPanel(Orientation.Horizontal) {
-      contents += new Label("Game Port: ") {
-        font = new Font("Arial", Font.PLAIN, 12)
-        preferredSize = new Dimension(100, 25)
-      }
-      contents += Swing.HStrut(10)
-      contents += gamePortField
-    }
-    
     // Buttons
     val buttonPanel = new BoxPanel(Orientation.Horizontal) {
       contents += joinButton
@@ -100,7 +90,6 @@ class JoinGameView extends MainFrame {
     mainPanel.contents += Swing.VStrut(15)
     mainPanel.contents += aiPanel
     mainPanel.contents += Swing.VStrut(15)
-    mainPanel.contents += portPanel
     mainPanel.contents += Swing.VStrut(30)
     mainPanel.contents += buttonPanel
     
@@ -130,8 +119,7 @@ class JoinGameView extends MainFrame {
   
   private def attemptJoin(): Unit = {
     val name = playerNameField.text.trim
-    val portText = gamePortField.text.trim
-    
+
     if (name.isEmpty) {
       JOptionPane.showMessageDialog(
         this.peer,
@@ -142,30 +130,7 @@ class JoinGameView extends MainFrame {
       return
     }
     
-    val port = try {
-      portText.toInt
-    } catch {
-      case _: NumberFormatException =>
-        JOptionPane.showMessageDialog(
-          this.peer,
-          "Please enter a valid port number",
-          "Invalid Port",
-          JOptionPane.WARNING_MESSAGE
-        )
-        return
-    }
-    
-    if (port < 1024 || port > 65535) {
-      JOptionPane.showMessageDialog(
-        this.peer,
-        "Port must be between 1024 and 65535",
-        "Invalid Port Range",
-        JOptionPane.WARNING_MESSAGE
-      )
-      return
-    }
-    
-    val joinRequest = JoinGameRequest(name, isAICheckbox.selected, port)
+    val joinRequest = JoinGameRequest(name, isAICheckbox.selected)
     onJoinRequest(joinRequest)
     dispose()
   }

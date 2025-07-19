@@ -2,7 +2,7 @@ package it.unibo.agar.view
 
 import scala.swing.*
 import scala.swing.event.*
-import java.awt.{Color, Font, BorderLayout, GridBagLayout, GridBagConstraints, Insets}
+import java.awt.{Color, Font}
 import javax.swing.{BorderFactory, JOptionPane}
 
 case class PlayerInfo(name: String, isAI: Boolean)
