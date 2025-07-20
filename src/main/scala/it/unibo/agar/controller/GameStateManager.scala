@@ -11,10 +11,12 @@ import it.unibo.agar.model.AIMovement
 import akka.actor.ActorSystem
 import akka.actor.CoordinatedShutdown
 import akka.cluster.Cluster
+
+import scala.concurrent.ExecutionContextExecutor
 import scala.util.Success
 import scala.util.Failure
 import scala.util.Random
-import scala.concurrent.duration._
+import scala.concurrent.duration.*
 
 object GameStateManager:
 
@@ -63,18 +65,6 @@ object GameStateManager:
 
               // Check for food consumption
               val foodEaten = world.foods.filter(food => EatingManager.canEatFood(updatedPlayer, food))
-              val playerAfterEating = foodEaten.foldLeft(updatedPlayer)((p, food) => p.grow(food))
-
-              // Check for player consumption
-              val playersEaten = world
-                .playersExcludingSelf(playerAfterEating)
-                .filter(otherPlayer => EatingManager.canEatPlayer(playerAfterEating, otherPlayer))
-              val finalPlayer = playersEaten.foldLeft(playerAfterEating)((p, other) => p.grow(other))
-
-              if (finalPlayer.mass >= winningMass) {
-                context.self ! GameEnded(finalPlayer.id, finalPlayer.mass)
-              }
-
               // Generate new food for consumed food
               val newFoods = foodEaten.map { f =>
                 Food(
@@ -84,15 +74,27 @@ object GameStateManager:
                   mass = f.mass
                 )
               }
+              val playerAfterEatingFood = foodEaten.foldLeft(updatedPlayer)((p, food) => p.grow(food))
+
+              // Check for player consumption
+              val playersEaten = world
+                .playersExcludingSelf(playerAfterEatingFood)
+                .filter(otherPlayer => EatingManager.canEatPlayer(playerAfterEatingFood, otherPlayer))
+              val finalPlayer = playersEaten.foldLeft(playerAfterEatingFood)((p, other) => p.grow(other))
+
+              if (finalPlayer.mass >= winningMass) {
+                context.self ! GameEnded(finalPlayer.id, finalPlayer.mass)
+              }
 
               // Update the world with the new player state, removed players, and new food
               if (foodEaten.nonEmpty || playersEaten.nonEmpty) {
+                context.log.info(otherManagers.keys.mkString("Managers: ", ", ", ""))
+                context.log.info(s" total food size ${world.foods.size} \n food to remove ${foodEaten.size} \n new food size ${newFoods.size}")
                 for (m <- otherManagers.values) {
                   if (foodEaten.nonEmpty) m ! FoodEaten(foodEaten.map(_.id), newFoods)
                   if (playersEaten.nonEmpty) m ! PlayerEaten(playersEaten.map(_.id))
                 }
               }
-              context.log.info(s"${world.foods.size}")
 
               world
                 .updatePlayer(finalPlayer)
@@ -135,7 +137,7 @@ object GameStateManager:
 
             Behaviors.same
 
-          case RegisterManager(managerId, manager) =>
+          case RegisterManager(managerId, manager) if managerId != localPlayerId =>
             context.log.info(s"Player $localPlayerId registering manager $managerId")
             otherManagers = otherManagers + (managerId -> manager)
 
@@ -214,7 +216,7 @@ object GameStateManager:
     }
 
 def shutdownClusterSystem(system: ActorSystem): Unit = {
-  implicit val ec = system.dispatcher
+  implicit val ec: ExecutionContextExecutor = system.dispatcher
 
   val cluster = Cluster(system)
   val coordinatedShutdown = CoordinatedShutdown(system)
