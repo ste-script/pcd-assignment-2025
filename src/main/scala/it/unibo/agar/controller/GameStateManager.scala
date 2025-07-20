@@ -36,9 +36,6 @@ object GameStateManager:
   private case class FoodEaten(foodIds: Seq[String], newFood: Seq[Food]) extends Command
   private case class GameEnded(winnerId: String, winnerMass: Double) extends Command
 
-  // Add AI management to GameStateManager
-  private case object AITick extends Command
-
   def apply(
       localPlayerId: String,
       world: World,
@@ -56,11 +53,6 @@ object GameStateManager:
 
         // Start internal timer for autonomous operation
         timers.startTimerWithFixedDelay("game-tick", InternalTick, 30.milliseconds)
-
-        // Start AI timer if this is an AI player
-        if (isAIPlayer) {
-          timers.startTimerWithFixedDelay("ai-tick", AITick, 100.milliseconds)
-        }
 
         def updatePlayerPosition(world: World, playerId: String, dx: Double, dy: Double, speed: Double) =
           world.playerById(playerId) match {
@@ -80,22 +72,18 @@ object GameStateManager:
               val finalPlayer = playersEaten.foldLeft(playerAfterEating)((p, other) => p.grow(other))
 
               if (finalPlayer.mass >= winningMass) {
-                // Broadcast game end to all other managers
-                otherManagers.values.foreach { manager =>
-                  manager ! GameEnded(finalPlayer.id, finalPlayer.mass)
-                }
-                // Also notify the game controller about the game end
                 context.self ! GameEnded(finalPlayer.id, finalPlayer.mass)
               }
 
-              val newFoods: Seq[Food] =
-                for (f <- foodEaten)
-                  yield Food(
-                    id = java.util.UUID.randomUUID().toString,
-                    x = Random.nextInt(world.width),
-                    y = Random.nextInt(world.height),
-                    mass = f.mass // Vary food mass slightly
-                  )
+              // Generate new food for consumed food
+              val newFoods = foodEaten.map { f =>
+                Food(
+                  id = java.util.UUID.randomUUID().toString,
+                  x = Random.nextInt(world.width),
+                  y = Random.nextInt(world.height),
+                  mass = f.mass
+                )
+              }
 
               // Update the world with the new player state, removed players, and new food
               if (foodEaten.nonEmpty || playersEaten.nonEmpty) {
@@ -104,13 +92,14 @@ object GameStateManager:
                   if (playersEaten.nonEmpty) m ! PlayerEaten(playersEaten.map(_.id))
                 }
               }
+              context.log.info(s"${world.foods.size}")
 
               world
                 .updatePlayer(finalPlayer)
                 .removePlayers(playersEaten)
                 .removeFoods(foodEaten)
                 .addFoods(newFoods)
-            case None => world
+            case _ => world
           }
 
         def broadcastMovement(): Unit = {
@@ -132,6 +121,9 @@ object GameStateManager:
             Behaviors.same
 
           case InternalTick =>
+            if (isAIPlayer) {
+              AIMovement.moveAI(localPlayerId, context.self)(context.system)
+            }
             direction match {
               case Some((dx, dy)) =>
                 localWorld = updatePlayerPosition(localWorld, localPlayerId, dx, dy, speed)
@@ -141,13 +133,6 @@ object GameStateManager:
             // Always broadcast our current position to other managers
             broadcastMovement()
 
-            Behaviors.same
-
-          case AITick =>
-            if (isAIPlayer) {
-              // Delegate AI movement to the AIMovement model
-              AIMovement.moveAI(localPlayerId, context.self)(context.system)
-            }
             Behaviors.same
 
           case RegisterManager(managerId, manager) =>
@@ -181,8 +166,8 @@ object GameStateManager:
             localWorld = localWorld.removePlayers(playersToRemove)
             Behaviors.same
 
-          case FoodEaten(foodIds, newFood) =>
-            val foodToRemove = localWorld.foods.filter(food => foodIds.contains(food.id))
+          case FoodEaten(foodToRemoveIds, newFood) =>
+            val foodToRemove = localWorld.foods.filter(food => foodToRemoveIds.contains(food.id))
             localWorld = localWorld.removeFoods(foodToRemove).addFoods(newFood)
             Behaviors.same
 

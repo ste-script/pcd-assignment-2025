@@ -6,7 +6,8 @@ import it.unibo.agar.controller.GameStateManager
 
 import scala.concurrent.duration.*
 import scala.concurrent.Future
-import scala.util.{Failure, Success}
+import scala.util.Failure
+import scala.util.Success
 
 /** Object responsible for AI movement logic, separate from the game state management */
 object AIMovement:
@@ -34,7 +35,9 @@ object AIMovement:
     * @param system
     *   The actor system for scheduling
     */
-  def moveAI(name: String, gameManager: ActorRef[GameStateManager.Command])(implicit system: akka.actor.typed.ActorSystem[_]): Unit =
+  def moveAI(name: String, gameManager: ActorRef[GameStateManager.Command])(implicit
+      system: akka.actor.typed.ActorSystem[_]
+  ): Unit =
     import akka.actor.typed.scaladsl.AskPattern._
 
     // Request the current world state from the game manager
@@ -52,7 +55,7 @@ object AIMovement:
 
             // Add minimum distance threshold to prevent oscillation
             val minDistance = 5.0 // Adjust based on your game scale
-            val moveSpeed = 0.5   // Reduce speed to prevent overshooting
+            val moveSpeed = 0.5 // Reduce speed to prevent overshooting
 
             if (distance > minDistance) {
               val normalizedDx = (dx / distance) * moveSpeed

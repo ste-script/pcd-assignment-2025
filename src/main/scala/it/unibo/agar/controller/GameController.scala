@@ -5,7 +5,6 @@ import akka.actor.typed.ActorSystem
 import akka.actor.typed.Scheduler
 import akka.actor.typed.scaladsl.AskPattern.*
 import akka.util.Timeout
-import it.unibo.agar.model.AIMovement
 import it.unibo.agar.model.GameInitializer
 import it.unibo.agar.model.Player
 import it.unibo.agar.model.World
@@ -13,13 +12,9 @@ import it.unibo.agar.view.GlobalView
 import it.unibo.agar.view.JoinGameRequest
 import it.unibo.agar.view.LocalView
 
-import java.awt.Window
-import java.util.Timer
-import java.util.TimerTask
 import javax.swing.JOptionPane
 import scala.concurrent.ExecutionContextExecutor
 import scala.concurrent.duration.*
-import scala.swing.Swing.onEDT
 import scala.util.Failure
 import scala.util.Random
 import scala.util.Success
