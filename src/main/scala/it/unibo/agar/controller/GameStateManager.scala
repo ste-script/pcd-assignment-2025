@@ -38,6 +38,13 @@ object GameStateManager:
   private case class FoodEaten(foodIds: Seq[String], newFood: Seq[Food]) extends Command
   private case class GameEnded(winnerId: String, winnerMass: Double) extends Command
 
+  // Internal state holder
+  private case class GameState(
+      world: World,
+      direction: Option[(Double, Double)] = None,
+      otherManagers: Map[String, ActorRef[Command]] = Map.empty
+  )
+
   def apply(
       localPlayerId: String,
       world: World,
@@ -47,193 +54,162 @@ object GameStateManager:
   ): Behavior[Command] =
     Behaviors.setup { context =>
       Behaviors.withTimers { timers =>
-        context.log.info(s"Starting DistributedGameStateManager for player $localPlayerId")
+        context.log.info(s"Starting GameStateManager for player $localPlayerId")
 
-        var localWorld = world
-        var direction: Option[(Double, Double)] = None
-        var otherManagers: Map[String, ActorRef[Command]] = Map.empty
+        var gameState = GameState(world)
 
         // Start internal timer for autonomous operation
         timers.startTimerWithFixedDelay("game-tick", InternalTick, 30.milliseconds)
 
-        def updatePlayerPosition(world: World, playerId: String, dx: Double, dy: Double, speed: Double) =
-          world.playerById(playerId) match {
+        def constrainPosition(value: Double, max: Double): Double =
+          value.max(0).min(max)
+
+        def generateNewFood(consumedFood: Food, worldWidth: Int, worldHeight: Int): Food =
+          Food(
+            id = java.util.UUID.randomUUID().toString,
+            x = Random.nextInt(worldWidth),
+            y = Random.nextInt(worldHeight),
+            mass = consumedFood.mass
+          )
+
+        def processEating(player: Player, world: World): (Player, Seq[Food], Seq[Player]) =
+          val foodEaten = world.foods.filter(food => EatingManager.canEatFood(player, food))
+          val playerAfterFood = foodEaten.foldLeft(player)((p, food) => p.grow(food))
+
+          val playersEaten = world
+            .playersExcludingSelf(playerAfterFood)
+            .filter(otherPlayer => EatingManager.canEatPlayer(playerAfterFood, otherPlayer))
+          val finalPlayer = playersEaten.foldLeft(playerAfterFood)((p, other) => p.grow(other))
+
+          (finalPlayer, foodEaten, playersEaten)
+
+        def notifyOtherManagers(foodEaten: Seq[Food], playersEaten: Seq[Player], newFoods: Seq[Food]): Unit =
+          if (foodEaten.nonEmpty || playersEaten.nonEmpty) {
+            gameState.otherManagers.values.foreach { manager =>
+              if (foodEaten.nonEmpty) manager ! FoodEaten(foodEaten.map(_.id), newFoods)
+              if (playersEaten.nonEmpty) manager ! PlayerEaten(playersEaten.map(_.id))
+            }
+          }
+
+        def updatePlayerPosition(playerId: String, dx: Double, dy: Double): Unit =
+          gameState.world.playerById(playerId) match {
             case Some(player) =>
-              val newX = (player.x + dx * speed).max(0).min(world.width)
-              val newY = (player.y + dy * speed).max(0).min(world.height)
+              val newX = constrainPosition(player.x + dx * speed, gameState.world.width)
+              val newY = constrainPosition(player.y + dy * speed, gameState.world.height)
               val updatedPlayer = player.copy(x = newX, y = newY)
 
-              // Check for food consumption
-              val foodEaten = world.foods.filter(food => EatingManager.canEatFood(updatedPlayer, food))
-              // Generate new food for consumed food
-              val newFoods = foodEaten.map { f =>
-                Food(
-                  id = java.util.UUID.randomUUID().toString,
-                  x = Random.nextInt(world.width),
-                  y = Random.nextInt(world.height),
-                  mass = f.mass
-                )
-              }
-              val playerAfterEatingFood = foodEaten.foldLeft(updatedPlayer)((p, food) => p.grow(food))
-
-              // Check for player consumption
-              val playersEaten = world
-                .playersExcludingSelf(playerAfterEatingFood)
-                .filter(otherPlayer => EatingManager.canEatPlayer(playerAfterEatingFood, otherPlayer))
-              val finalPlayer = playersEaten.foldLeft(playerAfterEatingFood)((p, other) => p.grow(other))
+              val (finalPlayer, foodEaten, playersEaten) = processEating(updatedPlayer, gameState.world)
 
               if (finalPlayer.mass >= winningMass) {
                 context.self ! GameEnded(finalPlayer.id, finalPlayer.mass)
               }
 
-              // Update the world with the new player state, removed players, and new food
-              if (foodEaten.nonEmpty || playersEaten.nonEmpty) {
-                context.log.info(otherManagers.keys.mkString("Managers: ", ", ", ""))
-                context.log.info(s" total food size ${world.foods.size} \n food to remove ${foodEaten.size} \n new food size ${newFoods.size}")
-                for (m <- otherManagers.values) {
-                  if (foodEaten.nonEmpty) m ! FoodEaten(foodEaten.map(_.id), newFoods)
-                  if (playersEaten.nonEmpty) m ! PlayerEaten(playersEaten.map(_.id))
-                }
-              }
+              val newFoods = foodEaten.map(generateNewFood(_, gameState.world.width, gameState.world.height))
+              notifyOtherManagers(foodEaten, playersEaten, newFoods)
 
-              world
-                .updatePlayer(finalPlayer)
-                .removePlayers(playersEaten)
-                .removeFoods(foodEaten)
-                .addFoods(newFoods)
-            case _ => world
+              gameState = gameState.copy(world =
+                gameState.world
+                  .updatePlayer(finalPlayer)
+                  .removePlayers(playersEaten)
+                  .removeFoods(foodEaten)
+                  .addFoods(newFoods)
+              )
+
+            case None => // Player not found, do nothing
           }
 
-        def broadcastMovement(): Unit = {
-          localWorld.playerById(localPlayerId).foreach { ourPlayer =>
-            otherManagers.values.foreach { manager =>
+        def broadcastMovement(): Unit =
+          gameState.world.playerById(localPlayerId).foreach { ourPlayer =>
+            gameState.otherManagers.values.foreach { manager =>
               manager ! PlayerMovement(localPlayerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
             }
           }
-        }
+
+        def handlePlayerMovement(id: String, x: Double, y: Double, mass: Double): Unit =
+          gameState.world.playerById(id) match {
+            case Some(player) =>
+              gameState = gameState.copy(world = gameState.world.updatePlayer(player.copy(x = x, y = y, mass = mass)))
+            case None =>
+              context.log.warn(s"Received movement for unknown player $id")
+          }
+
+        def handlePlayerLeft(leftPlayerId: String): Behavior[Command] =
+          if (leftPlayerId == localPlayerId) {
+            context.log.info(s"Player $leftPlayerId left the game, shutting down manager")
+            gameState.otherManagers.values.foreach(_.tell(PlayerLeft(leftPlayerId)))
+            GameController.actorSystemTerminated(localPlayerId)
+            CoordinatedShutdown(context.system).run(CoordinatedShutdown.clusterLeavingReason)
+            Behaviors.stopped
+          } else {
+            context.log.info(s"Player $leftPlayerId left the game, removing from world")
+            gameState = gameState.copy(world = gameState.world.removePlayer(leftPlayerId))
+            Behaviors.same
+          }
 
         Behaviors.receiveMessage {
           case MovePlayer(id, dx, dy) if id == localPlayerId =>
-            // Only handle movement for our own player
-            direction = Some((dx, dy))
+            gameState = gameState.copy(direction = Some((dx, dy)))
             Behaviors.same
 
           case GetWorld(replyTo) =>
-            replyTo ! localWorld
+            replyTo ! gameState.world
             Behaviors.same
 
           case InternalTick =>
             if (isAIPlayer) {
               AIMovement.moveAI(localPlayerId, context.self)(context.system)
             }
-            direction match {
-              case Some((dx, dy)) =>
-                localWorld = updatePlayerPosition(localWorld, localPlayerId, dx, dy, speed)
-              case None =>
+
+            gameState.direction.foreach { case (dx, dy) =>
+              updatePlayerPosition(localPlayerId, dx, dy)
             }
 
-            // Always broadcast our current position to other managers
             broadcastMovement()
-
             Behaviors.same
 
           case RegisterManager(managerId, manager) if managerId != localPlayerId =>
             context.log.info(s"Player $localPlayerId registering manager $managerId")
-            otherManagers = otherManagers + (managerId -> manager)
+            gameState = gameState.copy(otherManagers = gameState.otherManagers + (managerId -> manager))
 
-            // Send our current player state to the newly registered manager
-            localWorld.playerById(localPlayerId).foreach { ourPlayer =>
+            gameState.world.playerById(localPlayerId).foreach { ourPlayer =>
               manager ! PlayerMovement(localPlayerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
             }
-
-            // Only the first manager (or a designated manager) should send food state
-            // to prevent food duplication when multiple managers register with a new one
-            // We'll let the SyncWorldState message handle food synchronization instead
-
             Behaviors.same
 
           case PlayerMovement(id, x, y, mass) =>
-            // Handle movement for any player, including our own (for synchronization)
-            localWorld = localWorld.playerById(id) match {
-              case Some(player) =>
-                localWorld.updatePlayer(player.copy(x = x, y = y, mass = mass))
-              case None =>
-                context.log.warn(s"Received movement for unknown player $id")
-                localWorld
-            }
+            handlePlayerMovement(id, x, y, mass)
             Behaviors.same
 
           case PlayerEaten(ids) =>
-            val playersToRemove = localWorld.players.filter(player => ids.contains(player.id))
-            localWorld = localWorld.removePlayers(playersToRemove)
+            val playersToRemove = gameState.world.players.filter(player => ids.contains(player.id))
+            gameState = gameState.copy(world = gameState.world.removePlayers(playersToRemove))
             Behaviors.same
 
           case FoodEaten(foodToRemoveIds, newFood) =>
-            val foodToRemove = localWorld.foods.filter(food => foodToRemoveIds.contains(food.id))
-            localWorld = localWorld.removeFoods(foodToRemove).addFoods(newFood)
+            val foodToRemove = gameState.world.foods.filter(food => foodToRemoveIds.contains(food.id))
+            gameState = gameState.copy(world = gameState.world.removeFoods(foodToRemove).addFoods(newFood))
             Behaviors.same
 
           case PlayerJoined(newPlayerId, player) =>
-            context.log.info(s"Message from $localPlayerId Player $newPlayerId joined the game")
-            localWorld = localWorld.addPlayer(player)
+            context.log.info(s"Player $newPlayerId joined the game")
+            gameState = gameState.copy(world = gameState.world.addPlayer(player))
             Behaviors.same
 
           case SyncWorldState(worldState) =>
-            context.log.info(s"Synchronizing world state with manager")
-            localWorld = worldState
-            // Optionally, notify this manager's player about the updated world state
+            context.log.info(s"Synchronizing world state")
+            gameState = gameState.copy(world = worldState)
             broadcastMovement()
             Behaviors.same
 
           case GameEnded(winnerId, winnerMass) =>
-            // context.log.info(s"Game ended! Player $winnerId won with mass $winnerMass")
-            // Don't stop the actor immediately - let the controller handle the shutdown
-            // The controller will detect the game end and properly shut down all systems
-            // TODO handle game end logic, e.g., notify UI or reset state
+            context.log.info(s"Game ended! Player $winnerId won with mass $winnerMass")
             Behaviors.same
 
           case PlayerLeft(leftPlayerId) =>
-            if (leftPlayerId == localPlayerId) {
-              context.log.info(s"Player $leftPlayerId left the game, shutting down manager")
-              // Notify all other managers about this player's disconnection
-              otherManagers.values.foreach { manager =>
-                manager ! PlayerLeft(leftPlayerId)
-              }
-              import akka.actor.CoordinatedShutdown
-              GameController.actorSystemTerminated(localPlayerId)
-              CoordinatedShutdown(context.system).run(CoordinatedShutdown.clusterLeavingReason)
-              // Stop processing further messages after initiating shutdown
-              Behaviors.stopped
-            } else {
-              context.log.info(s"Player $leftPlayerId left the game, removing from world")
-              localWorld = localWorld.removePlayer(leftPlayerId)
-              Behaviors.same
-            }
+            handlePlayerLeft(leftPlayerId)
+
           case _ =>
             Behaviors.same
         }
       }
     }
-
-def shutdownClusterSystem(system: ActorSystem): Unit = {
-  implicit val ec: ExecutionContextExecutor = system.dispatcher
-
-  val cluster = Cluster(system)
-  val coordinatedShutdown = CoordinatedShutdown(system)
-
-  // Leave cluster first
-  cluster.leave(cluster.selfAddress)
-
-  // Register callback to terminate system after leaving cluster
-  cluster.registerOnMemberRemoved {
-    coordinatedShutdown.run(CoordinatedShutdown.ClusterLeavingReason)
-  }
-
-  // Wait for termination
-  system.whenTerminated.onComplete {
-    case Success(_) =>
-      println("Actor system terminated and ports freed")
-    case Failure(ex) =>
-      println(s"Termination failed: $ex")
-  }
-}
