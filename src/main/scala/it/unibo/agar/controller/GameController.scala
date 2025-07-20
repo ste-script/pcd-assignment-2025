@@ -1,18 +1,28 @@
 package it.unibo.agar.controller
 
-import akka.actor.typed.{ActorRef, ActorSystem, Scheduler}
+import akka.actor.typed.ActorRef
+import akka.actor.typed.ActorSystem
+import akka.actor.typed.Scheduler
 import akka.actor.typed.scaladsl.AskPattern.*
 import akka.util.Timeout
-import it.unibo.agar.model.{AIMovement, GameInitializer, Player, World}
-import it.unibo.agar.view.{GlobalView, JoinGameRequest, LocalView}
+import it.unibo.agar.model.AIMovement
+import it.unibo.agar.model.GameInitializer
+import it.unibo.agar.model.Player
+import it.unibo.agar.model.World
+import it.unibo.agar.view.GlobalView
+import it.unibo.agar.view.JoinGameRequest
+import it.unibo.agar.view.LocalView
 
 import java.awt.Window
-import java.util.{Timer, TimerTask}
+import java.util.Timer
+import java.util.TimerTask
 import javax.swing.JOptionPane
 import scala.concurrent.ExecutionContextExecutor
 import scala.concurrent.duration.*
 import scala.swing.Swing.onEDT
-import scala.util.{Failure, Random, Success}
+import scala.util.Failure
+import scala.util.Random
+import scala.util.Success
 
 object GameController {
 
@@ -22,15 +32,13 @@ object GameController {
   private val winningMass = 1000
   private val playerSpeed = 10
 
-  private var gameTimer: Timer = null
   private var isGameActive = false
   private var gameEnded = false
   private var winner: Option[(String, Double)] = None
-  private var _baseSystem: Option[ActorSystem[GameStateManager.Command]] = None
+  private var _baseSystem: List[ActorSystem[GameStateManager.Command]] = List.empty
 
   // Store information about running games
   private var activeSystems: Map[String, ActorSystem[GameStateManager.Command]] = Map.empty
-  private var aiPlayers: Set[String] = Set.empty
 
   // Track views for proper shutdown
   private var globalView: Option[GlobalView] = None
@@ -44,7 +52,7 @@ object GameController {
 
     // Create a base system to maintain the world state
     val baseSystem = it.unibo.agar.startup("agario", 25251)(
-      GameStateManager("__server__", emptyWorld, playerSpeed, winningMass)
+      GameStateManager("__server__", emptyWorld, playerSpeed, winningMass, false)
     )
 
     // Store the base system
@@ -53,15 +61,12 @@ object GameController {
     // Mark game as active
     isGameActive = true
 
-    // Start game timer for world updates
-    startGameTimer()
-
     // Create and open global view with the empty game
     implicit val implicitSystem: ActorSystem[GameStateManager.Command] = baseSystem
     globalView = Some(new GlobalView(baseSystem))
     globalView.foreach(_.open())
 
-    _baseSystem = Some(baseSystem)
+    _baseSystem = List(baseSystem)
     println("Empty game started successfully - players can now join")
   }
 
@@ -95,17 +100,12 @@ object GameController {
       }
 
       // Create new system for the joining player
-      val newSystem = createPlayerSystem(newPlayer)
+      val newSystem = createPlayerSystem(newPlayer, joinRequest.isAI)
 
       // Add to active systems
       activeSystems += (newPlayer.id -> newSystem)
       // Register the new system with all existing systems
       registerNewPlayerWithExistingSystems(newPlayer, newSystem)
-
-      // Track AI players
-      if (joinRequest.isAI) {
-        aiPlayers += newPlayer.id
-      }
 
       // Create view for human player
       if (!joinRequest.isAI) {
@@ -124,11 +124,12 @@ object GameController {
   }
 
   private def createPlayerSystem(
-      player: it.unibo.agar.model.Player
+      player: it.unibo.agar.model.Player,
+      isAI: Boolean
   ): ActorSystem[GameStateManager.Command] = {
     // Joining player - create minimal world without food, will be synchronized later
     val managerBehavior =
-      GameStateManager(player.id, World(width, height, Seq(player), Seq.empty), playerSpeed, winningMass)
+      GameStateManager(player.id, World(width, height, Seq(player), Seq.empty), playerSpeed, winningMass, isAI)
     it.unibo.agar.startup("agario")(managerBehavior)
   }
 
@@ -138,8 +139,8 @@ object GameController {
   ): Unit = {
 
     // Get current world state from an existing system to synchronize the new player
-    if (_baseSystem.isDefined) {
-      val existingSystem = _baseSystem.get
+    if (_baseSystem.nonEmpty) {
+      val existingSystem = _baseSystem.head
 
       // Use ask pattern to get current world state
 
@@ -177,35 +178,6 @@ object GameController {
   def actorSystemTerminated(system: String): Unit =
     // Remove the system from active systems
     activeSystems = activeSystems.filterNot { case (s, _) => s == system }
-
-  private def startGameTimer(): Unit = {
-    if (gameTimer != null) {
-      gameTimer.cancel()
-    }
-
-    gameTimer = new Timer()
-    val task: TimerTask = new TimerTask {
-      override def run(): Unit = {
-        if (!gameEnded) {
-          // Move AI players
-          for (aiPlayerId <- aiPlayers) {
-            activeSystems.get(aiPlayerId).foreach { aiSystem =>
-              AIMovement.moveAI(aiPlayerId, aiSystem)(aiSystem)
-            }
-          }
-
-          // Send tick to all active systems
-          for (system <- activeSystems.values)
-            system ! GameStateManager.Tick
-
-          // Update UI
-          onEDT(Window.getWindows.foreach(_.repaint()))
-        }
-      }
-    }
-
-    gameTimer.scheduleAtFixedRate(task, 0, 30) // every 30ms
-  }
 
   private def showError(message: String): Unit = {
     JOptionPane.showMessageDialog(
