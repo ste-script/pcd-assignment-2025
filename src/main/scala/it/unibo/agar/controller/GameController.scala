@@ -19,168 +19,178 @@ import scala.util.Failure
 import scala.util.Random
 import scala.util.Success
 
-object GameController {
+object GameController:
 
-  private val width = 800
-  private val height = 800
-  private val numFoods = 100
-  private val winningMass = 1000
-  private val playerSpeed = 10
+  // Game configuration
+  private object Config:
 
-  private var isGameActive = false
-  private var gameEnded = false
-  private var winner: Option[(String, Double)] = None
-  private var _baseSystem: List[ActorSystem[GameStateManager.Command]] = List.empty
+    val width = 800
+    val height = 800
+    val numFoods = 100
+    val winningMass = 1000
+    val playerSpeed = 10
+    val serverPlayerId = "__server__"
+    val basePort = 25251
+    val syncTimeout: FiniteDuration = 3.seconds
 
-  // Store information about running games
-  private var activeSystems: Map[String, ActorSystem[GameStateManager.Command]] = Map.empty
+  // Game state management
+  private case class GameState(
+      isActive: Boolean = false,
+      gameEnded: Boolean = false,
+      winner: Option[(String, Double)] = None,
+      activeSystems: Map[String, ActorSystem[GameStateManager.Command]] = Map.empty,
+      baseSystem: Option[ActorSystem[GameStateManager.Command]] = None,
+      globalView: Option[GlobalView] = None,
+      localViews: Map[String, LocalView] = Map.empty
+  )
 
-  // Track views for proper shutdown
-  private var globalView: Option[GlobalView] = None
-  private var localViews: Map[String, LocalView] = Map.empty
+  private var gameState = GameState()
 
-  def startEmptyGame(): Unit = {
+  def startEmptyGame(): Unit =
     println("Starting empty game - ready for players to join")
 
-    // Initialize empty world with just food
-    val emptyWorld = World(width, height, Seq.empty, GameInitializer.initialFoods(numFoods, width, height))
+    val emptyWorld = createEmptyWorld()
+    val baseSystem = createBaseSystem(emptyWorld)
 
-    // Create a base system to maintain the world state
-    val baseSystem = it.unibo.agar.startup("agario", 25251)(
-      GameStateManager("__server__", emptyWorld, playerSpeed, winningMass, false)
+    gameState = gameState.copy(
+      isActive = true,
+      activeSystems = gameState.activeSystems + (Config.serverPlayerId -> baseSystem),
+      baseSystem = Some(baseSystem)
     )
 
-    // Store the base system
-    activeSystems += ("__server__" -> baseSystem)
-
-    // Mark game as active
-    isGameActive = true
-
-    // Create and open global view with the empty game
-    implicit val implicitSystem: ActorSystem[GameStateManager.Command] = baseSystem
-    globalView = Some(new GlobalView(baseSystem))
-    globalView.foreach(_.open())
-
-    _baseSystem = List(baseSystem)
+    initializeGlobalView(baseSystem)
     println("Empty game started successfully - players can now join")
-  }
 
-  def joinExistingGame(joinRequest: JoinGameRequest): Unit = {
-    if (!isGameActive) {
+  def joinExistingGame(joinRequest: JoinGameRequest): Unit =
+    if (!gameState.isActive) {
       showError("No active game found. Please start a new game first.")
+      return
+    }
+
+    if (isPlayerNameTaken(joinRequest.playerName)) {
+      showError(s"Player name '${joinRequest.playerName}' already exists in the game.")
       return
     }
 
     println(s"Player ${joinRequest.playerName} attempting to join existing game")
 
-    // Check if player name already exists
-    if (activeSystems.contains(joinRequest.playerName)) {
-      showError(s"Player name '${joinRequest.playerName}' already exists in the game.")
-      return
-    }
-
     try {
-      // Create new player
-      val newPlayer = it.unibo.agar.model.Player(
-        id = joinRequest.playerName,
-        x = Random.nextInt(width).toDouble,
-        y = Random.nextInt(height).toDouble,
-        mass = 120.0
-      )
-
-      // Get current world state from an existing system
-      if (activeSystems.values.headOption.isEmpty) {
-        showError("Unable to connect to existing game.")
-        return
-      }
-
-      // Create new system for the joining player
+      val newPlayer = createNewPlayer(joinRequest.playerName)
       val newSystem = createPlayerSystem(newPlayer, joinRequest.isAI)
 
-      // Add to active systems
-      activeSystems += (newPlayer.id -> newSystem)
-      // Register the new system with all existing systems
+      addPlayerToGame(newPlayer, newSystem, joinRequest.isAI)
       registerNewPlayerWithExistingSystems(newPlayer, newSystem)
 
-      // Create view for human player
-      if (!joinRequest.isAI) {
-        implicit val implicitSystem: ActorSystem[GameStateManager.Command] = newSystem
-        val localView = new LocalView(newSystem, newPlayer.id)
-        localViews += (newPlayer.id -> localView)
-        localView.open()
-      }
-
       println(s"Player ${joinRequest.playerName} successfully joined the game")
-
     } catch {
       case e: Exception =>
         showError(s"Failed to join game: ${e.getMessage}")
     }
-  }
 
-  private def createPlayerSystem(
-      player: it.unibo.agar.model.Player,
-      isAI: Boolean
-  ): ActorSystem[GameStateManager.Command] = {
-    // Joining player - create minimal world without food, will be synchronized later
-    val managerBehavior =
-      GameStateManager(player.id, World(width, height, Seq(player), Seq.empty), playerSpeed, winningMass, isAI)
+  def actorSystemTerminated(systemId: String): Unit =
+    gameState = gameState.copy(
+      activeSystems = gameState.activeSystems.filterNot(_._1 == systemId),
+      localViews = gameState.localViews.filterNot(_._1 == systemId)
+    )
+
+  // Private helper methods
+  private def createEmptyWorld(): World =
+    World(
+      Config.width,
+      Config.height,
+      Seq.empty,
+      GameInitializer.initialFoods(Config.numFoods, Config.width, Config.height)
+    )
+
+  private def createBaseSystem(world: World): ActorSystem[GameStateManager.Command] =
+    it.unibo.agar.startup("agario", Config.basePort)(
+      GameStateManager(Config.serverPlayerId, world, Config.playerSpeed, Config.winningMass, false)
+    )
+
+  private def initializeGlobalView(baseSystem: ActorSystem[GameStateManager.Command]): Unit =
+    implicit val implicitSystem: ActorSystem[GameStateManager.Command] = baseSystem
+    val globalView = new GlobalView(baseSystem)
+    globalView.open()
+    gameState = gameState.copy(globalView = Some(globalView))
+
+  private def isPlayerNameTaken(playerName: String): Boolean =
+    gameState.activeSystems.contains(playerName)
+
+  private def createNewPlayer(playerId: String): Player =
+    Player(
+      id = playerId,
+      x = Random.nextInt(Config.width).toDouble,
+      y = Random.nextInt(Config.height).toDouble,
+      mass = 120.0
+    )
+
+  private def createPlayerSystem(player: Player, isAI: Boolean): ActorSystem[GameStateManager.Command] =
+    val managerBehavior = GameStateManager(
+      player.id,
+      World(Config.width, Config.height, Seq(player), Seq.empty),
+      Config.playerSpeed,
+      Config.winningMass,
+      isAI
+    )
     it.unibo.agar.startup("agario")(managerBehavior)
-  }
+
+  private def addPlayerToGame(player: Player, system: ActorSystem[GameStateManager.Command], isAI: Boolean): Unit =
+    gameState = gameState.copy(
+      activeSystems = gameState.activeSystems + (player.id -> system)
+    )
+
+    if (!isAI) {
+      createLocalViewForPlayer(player, system)
+    }
+
+  private def createLocalViewForPlayer(player: Player, system: ActorSystem[GameStateManager.Command]): Unit =
+    implicit val implicitSystem: ActorSystem[GameStateManager.Command] = system
+    val localView = new LocalView(system, player.id)
+    localView.open()
+    gameState = gameState.copy(
+      localViews = gameState.localViews + (player.id -> localView)
+    )
 
   private def registerNewPlayerWithExistingSystems(
       newPlayer: Player,
       newSystem: ActorSystem[GameStateManager.Command]
-  ): Unit = {
+  ): Unit =
+    syncNewPlayerWithGameState(newPlayer, newSystem)
+    crossRegisterSystems(newPlayer, newSystem)
 
-    // Get current world state from an existing system to synchronize the new player
-    if (_baseSystem.nonEmpty) {
-      val existingSystem = _baseSystem.head
-
-      // Use ask pattern to get current world state
-
-      implicit val timeout: Timeout = 3.seconds
+  private def syncNewPlayerWithGameState(newPlayer: Player, newSystem: ActorSystem[GameStateManager.Command]): Unit =
+    gameState.baseSystem.foreach { existingSystem =>
+      implicit val timeout: Timeout = Config.syncTimeout
       implicit val scheduler: Scheduler = existingSystem.scheduler
       implicit val ec: ExecutionContextExecutor = existingSystem.executionContext
 
       val worldFuture = existingSystem ? GameStateManager.GetWorld.apply
       worldFuture.onComplete {
         case Success(currentWorld) =>
-          // Sync the new system with current world state
           newSystem ! GameStateManager.SyncWorldState(currentWorld)
-
-          // Notify all existing systems about the new player
-          for ((_, existingSystem) <- activeSystems)
-            existingSystem ! GameStateManager.PlayerJoined(newPlayer.id, newPlayer)
-
-          println(s"Successfully synchronized new player ${newPlayer.id}  with existing game state")
+          notifyExistingSystemsOfNewPlayer(newPlayer)
+          println(s"Successfully synchronized new player ${newPlayer.id} with existing game state")
 
         case Failure(exception) =>
           println(s"Failed to synchronize new player ${newPlayer.id}: ${exception.getMessage}")
       }
     }
 
-    // Register new player with all existing systems
-    for ((existingPlayerId, existingSystem) <- activeSystems) {
-      // Register new player with existing system
-      existingSystem ! GameStateManager.RegisterManager(newPlayer.id, newSystem)
+  private def notifyExistingSystemsOfNewPlayer(newPlayer: Player): Unit =
+    gameState.activeSystems.values.foreach { system =>
+      system ! GameStateManager.PlayerJoined(newPlayer.id, newPlayer)
+    }
 
-      // Register existing player with new system
+  private def crossRegisterSystems(newPlayer: Player, newSystem: ActorSystem[GameStateManager.Command]): Unit =
+    gameState.activeSystems.foreach { case (existingPlayerId, existingSystem) =>
+      existingSystem ! GameStateManager.RegisterManager(newPlayer.id, newSystem)
       newSystem ! GameStateManager.RegisterManager(existingPlayerId, existingSystem)
     }
-  }
 
-  def actorSystemTerminated(system: String): Unit =
-    // Remove the system from active systems
-    activeSystems = activeSystems.filterNot { case (s, _) => s == system }
-
-  private def showError(message: String): Unit = {
+  private def showError(message: String): Unit =
     JOptionPane.showMessageDialog(
       null,
       message,
       "Error",
       JOptionPane.ERROR_MESSAGE
     )
-  }
-
-}
