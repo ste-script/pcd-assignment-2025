@@ -25,12 +25,6 @@ class JoinGameView extends MainFrame {
     font = new Font("Arial", Font.PLAIN, 12)
   }
   
-  private val gamePortField = new TextField {
-    columns = 10
-    font = new Font("Arial", Font.PLAIN, 14)
-    text = "25251" // Default game port
-  }
-  
   private val joinButton = new Button("Join Game") {
     font = new Font("Arial", Font.BOLD, 14)
     preferredSize = new Dimension(120, 30)
@@ -109,10 +103,6 @@ class JoinGameView extends MainFrame {
     
     // Enter key handlers
     playerNameField.reactions += {
-      case KeyPressed(_, Key.Enter, _, _) => attemptJoin()
-    }
-    
-    gamePortField.reactions += {
       case KeyPressed(_, Key.Enter, _, _) => attemptJoin()
     }
   }

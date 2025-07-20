@@ -7,7 +7,11 @@ import it.unibo.agar.model.EatingManager
 import it.unibo.agar.model.Food
 import it.unibo.agar.model.Player
 import it.unibo.agar.model.World
-
+import akka.actor.ActorSystem
+import akka.actor.CoordinatedShutdown
+import akka.cluster.Cluster
+import scala.util.Success
+import scala.util.Failure
 import scala.util.Random
 
 object GameStateManager:
@@ -30,9 +34,9 @@ object GameStateManager:
   private case class FoodEaten(foodIds: Seq[String], newFood: Seq[Food]) extends Command
   private case class GameEnded(winnerId: String, winnerMass: Double) extends Command
 
-  def apply(playerId: String, world: World, speed: Double, winningMass: Int): Behavior[Command] =
+  def apply(localPlayerId: String, world: World, speed: Double, winningMass: Int): Behavior[Command] =
     Behaviors.setup { context =>
-      context.log.info(s"Starting DistributedGameStateManager for player $playerId")
+      context.log.info(s"Starting DistributedGameStateManager for player $localPlayerId")
 
       var localWorld = world
       var direction: Option[(Double, Double)] = None
@@ -92,15 +96,15 @@ object GameStateManager:
         }
 
       def broadcastMovement(): Unit = {
-        localWorld.playerById(playerId).foreach { ourPlayer =>
+        localWorld.playerById(localPlayerId).foreach { ourPlayer =>
           otherManagers.values.foreach { manager =>
-            manager ! PlayerMovement(playerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
+            manager ! PlayerMovement(localPlayerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
           }
         }
       }
 
       Behaviors.receiveMessage {
-        case MovePlayer(id, dx, dy) if id == playerId =>
+        case MovePlayer(id, dx, dy) if id == localPlayerId =>
           // Only handle movement for our own player
           direction = Some((dx, dy))
           Behaviors.same
@@ -112,7 +116,7 @@ object GameStateManager:
         case Tick =>
           direction match {
             case Some((dx, dy)) =>
-              localWorld = updatePlayerPosition(localWorld, playerId, dx, dy, speed)
+              localWorld = updatePlayerPosition(localWorld, localPlayerId, dx, dy, speed)
             case None =>
           }
 
@@ -122,12 +126,12 @@ object GameStateManager:
           Behaviors.same
 
         case RegisterManager(managerId, manager) =>
-          context.log.info(s"Player $playerId registering manager $managerId")
+          context.log.info(s"Player $localPlayerId registering manager $managerId")
           otherManagers = otherManagers + (managerId -> manager)
 
           // Send our current player state to the newly registered manager
-          localWorld.playerById(playerId).foreach { ourPlayer =>
-            manager ! PlayerMovement(playerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
+          localWorld.playerById(localPlayerId).foreach { ourPlayer =>
+            manager ! PlayerMovement(localPlayerId, ourPlayer.x, ourPlayer.y, ourPlayer.mass)
           }
 
           // Only the first manager (or a designated manager) should send food state
@@ -158,7 +162,7 @@ object GameStateManager:
           Behaviors.same
 
         case PlayerJoined(newPlayerId, player) =>
-          context.log.info(s"Player $newPlayerId joined the game")
+          context.log.info(s"Message from $localPlayerId Player $newPlayerId joined the game")
           localWorld = localWorld.addPlayer(player)
           Behaviors.same
 
@@ -177,13 +181,16 @@ object GameStateManager:
           Behaviors.same
 
         case PlayerLeft(leftPlayerId) =>
-          if (leftPlayerId == playerId) {
+          if (leftPlayerId == localPlayerId) {
             context.log.info(s"Player $leftPlayerId left the game, shutting down manager")
             // Notify all other managers about this player's disconnection
             otherManagers.values.foreach { manager =>
               manager ! PlayerLeft(leftPlayerId)
             }
-            context.system.terminate()
+            import akka.actor.CoordinatedShutdown
+            GameController.actorSystemTerminated(localPlayerId)
+            CoordinatedShutdown(context.system).run(CoordinatedShutdown.clusterLeavingReason)
+            // Stop processing further messages after initiating shutdown
             Behaviors.stopped
           } else {
             context.log.info(s"Player $leftPlayerId left the game, removing from world")
@@ -194,3 +201,26 @@ object GameStateManager:
           Behaviors.same
       }
     }
+
+def shutdownClusterSystem(system: ActorSystem): Unit = {
+  implicit val ec = system.dispatcher
+
+  val cluster = Cluster(system)
+  val coordinatedShutdown = CoordinatedShutdown(system)
+
+  // Leave cluster first
+  cluster.leave(cluster.selfAddress)
+
+  // Register callback to terminate system after leaving cluster
+  cluster.registerOnMemberRemoved {
+    coordinatedShutdown.run(CoordinatedShutdown.ClusterLeavingReason)
+  }
+
+  // Wait for termination
+  system.whenTerminated.onComplete {
+    case Success(_) =>
+      println("Actor system terminated and ports freed")
+    case Failure(ex) =>
+      println(s"Termination failed: $ex")
+  }
+}

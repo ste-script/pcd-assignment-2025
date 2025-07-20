@@ -1,29 +1,18 @@
 package it.unibo.agar.controller
 
-import akka.actor.typed.ActorRef
-import akka.actor.typed.ActorSystem
-import akka.actor.typed.Scheduler
-import it.unibo.agar.model.AIMovement
-import it.unibo.agar.model.GameInitializer
-import it.unibo.agar.model.Player
-import it.unibo.agar.model.World
-import it.unibo.agar.view.GlobalView
-import it.unibo.agar.view.JoinGameRequest
-import it.unibo.agar.view.LocalView
-
-import java.awt.Window
-import java.util.Timer
-import java.util.TimerTask
-import scala.swing.Swing.onEDT
-import scala.util.Random
-import javax.swing.JOptionPane
-import scala.concurrent.ExecutionContextExecutor
+import akka.actor.typed.{ActorRef, ActorSystem, Scheduler}
 import akka.actor.typed.scaladsl.AskPattern.*
 import akka.util.Timeout
+import it.unibo.agar.model.{AIMovement, GameInitializer, Player, World}
+import it.unibo.agar.view.{GlobalView, JoinGameRequest, LocalView}
 
+import java.awt.Window
+import java.util.{Timer, TimerTask}
+import javax.swing.JOptionPane
+import scala.concurrent.ExecutionContextExecutor
 import scala.concurrent.duration.*
-import scala.util.Success
-import scala.util.Failure
+import scala.swing.Swing.onEDT
+import scala.util.{Failure, Random, Success}
 
 object GameController {
 
@@ -32,7 +21,6 @@ object GameController {
   private val numFoods = 100
   private val winningMass = 1000
   private val playerSpeed = 10
-  private val initialNetworkPort = 25251
 
   private var gameTimer: Timer = null
   private var isGameActive = false
@@ -55,7 +43,7 @@ object GameController {
     val emptyWorld = World(width, height, Seq.empty, GameInitializer.initialFoods(numFoods, width, height))
 
     // Create a base system to maintain the world state
-    val baseSystem = it.unibo.agar.startup("agario", initialNetworkPort)(
+    val baseSystem = it.unibo.agar.startup("agario", 25251)(
       GameStateManager("__server__", emptyWorld, playerSpeed, winningMass)
     )
 
@@ -107,8 +95,7 @@ object GameController {
       }
 
       // Create new system for the joining player
-      val nextPort = initialNetworkPort + activeSystems.size
-      val newSystem = createPlayerSystem(newPlayer, nextPort)
+      val newSystem = createPlayerSystem(newPlayer)
 
       // Add to active systems
       activeSystems += (newPlayer.id -> newSystem)
@@ -137,13 +124,12 @@ object GameController {
   }
 
   private def createPlayerSystem(
-      player: it.unibo.agar.model.Player,
-      port: Int
+      player: it.unibo.agar.model.Player
   ): ActorSystem[GameStateManager.Command] = {
     // Joining player - create minimal world without food, will be synchronized later
     val managerBehavior =
       GameStateManager(player.id, World(width, height, Seq(player), Seq.empty), playerSpeed, winningMass)
-    it.unibo.agar.startup("agario", port)(managerBehavior)
+    it.unibo.agar.startup("agario")(managerBehavior)
   }
 
   private def registerNewPlayerWithExistingSystems(
@@ -188,6 +174,10 @@ object GameController {
     }
   }
 
+  def actorSystemTerminated(system: String): Unit =
+    // Remove the system from active systems
+    activeSystems = activeSystems.filterNot { case (s, _) => s == system }
+
   private def startGameTimer(): Unit = {
     if (gameTimer != null) {
       gameTimer.cancel()
@@ -225,4 +215,5 @@ object GameController {
       JOptionPane.ERROR_MESSAGE
     )
   }
+
 }
