@@ -1,6 +1,7 @@
 package it.unibo.agar.controller
 
 import akka.actor.typed.ActorRef
+import akka.actor.typed.ActorSystem
 import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.Behaviors
 import it.unibo.agar.model.EatingManager
@@ -8,13 +9,13 @@ import it.unibo.agar.model.Food
 import it.unibo.agar.model.Player
 import it.unibo.agar.model.World
 import it.unibo.agar.model.AIMovement
-import akka.actor.ActorSystem
 import akka.actor.CoordinatedShutdown
-import akka.cluster.Cluster
+import akka.cluster.typed.Cluster
+import akka.cluster.typed.Subscribe
+import akka.cluster.ClusterEvent.MemberRemoved
+import akka.cluster.ClusterEvent.MemberEvent
+import akka.actor.Address
 
-import scala.concurrent.ExecutionContextExecutor
-import scala.util.Success
-import scala.util.Failure
 import scala.util.Random
 import scala.concurrent.duration.*
 
@@ -26,9 +27,10 @@ object GameStateManager:
   case class MovePlayer(id: String, dx: Double, dy: Double) extends Command
   case class GetWorld(replyTo: ActorRef[World]) extends Command
   private case object InternalTick extends Command
+  private case object DoNothing extends Command
 
   // Messages for inter-manager communication
-  case class RegisterManager(managerId: String, manager: ActorRef[Command]) extends Command
+  case class RegisterManager(managerId: String, manager: ActorSystem[Command]) extends Command
   case class PlayerJoined(playerId: String, player: Player) extends Command
   case class SyncWorldState(world: World) extends Command
   case class PlayerLeft(playerId: String) extends Command
@@ -37,12 +39,13 @@ object GameStateManager:
   private case class PlayerEaten(playerId: Seq[String]) extends Command
   private case class FoodEaten(foodIds: Seq[String], newFood: Seq[Food]) extends Command
   private case class GameEnded(winnerId: String, winnerMass: Double) extends Command
+  private case class RemoveManager(address: Address) extends Command
 
   // Internal state holder
   private case class GameState(
       world: World,
       direction: Option[(Double, Double)] = None,
-      otherManagers: Map[String, ActorRef[Command]] = Map.empty
+      otherManagers: Map[String, ActorSystem[Command]] = Map.empty
   )
 
   def apply(
@@ -54,6 +57,12 @@ object GameStateManager:
   ): Behavior[Command] =
     Behaviors.setup { context =>
       Behaviors.withTimers { timers =>
+        val cluster = Cluster(context.system)
+        val memberEventAdapter = context.messageAdapter[MemberEvent] {
+          case MemberRemoved(member, _) => RemoveManager(member.address)
+          case _ => DoNothing
+        }
+        cluster.subscriptions ! Subscribe(memberEventAdapter, classOf[MemberEvent])
         context.log.info(s"Starting GameStateManager for player $localPlayerId")
 
         var gameState = GameState(world)
@@ -102,6 +111,7 @@ object GameStateManager:
 
               if (finalPlayer.mass >= winningMass) {
                 context.self ! GameEnded(finalPlayer.id, finalPlayer.mass)
+                gameState.otherManagers.values.foreach(_ ! GameEnded(finalPlayer.id, finalPlayer.mass))
               }
 
               val newFoods = foodEaten.map(generateNewFood(_, gameState.world.width, gameState.world.height))
@@ -136,13 +146,16 @@ object GameStateManager:
         def handlePlayerLeft(leftPlayerId: String): Behavior[Command] =
           if (leftPlayerId == localPlayerId) {
             context.log.info(s"Player $leftPlayerId left the game, shutting down manager")
-            gameState.otherManagers.values.foreach(_.tell(PlayerLeft(leftPlayerId)))
+            gameState.otherManagers.values.foreach(_ ! PlayerLeft(leftPlayerId))
             GameController.actorSystemTerminated(localPlayerId)
             CoordinatedShutdown(context.system).run(CoordinatedShutdown.clusterLeavingReason)
             Behaviors.stopped
           } else {
             context.log.info(s"Player $leftPlayerId left the game, removing from world")
-            gameState = gameState.copy(world = gameState.world.removePlayer(leftPlayerId))
+            gameState = gameState.copy(
+              world = gameState.world.removePlayer(leftPlayerId),
+              otherManagers = gameState.otherManagers - leftPlayerId
+            )
             Behaviors.same
           }
 
@@ -207,6 +220,21 @@ object GameStateManager:
 
           case PlayerLeft(leftPlayerId) =>
             handlePlayerLeft(leftPlayerId)
+
+          case RemoveManager(address) =>
+            val node = gameState.otherManagers.find((s, m) => m.address == address)
+            if (node.isEmpty) {
+              context.log.warn(s"Manager removing already handled: $address")
+            } else {
+              context.log.info(s"Removing node $node left the cluster without notifying, removing it")
+              val playerIdToRemove = node.get._1
+              context.self ! PlayerLeft(playerIdToRemove)
+              gameState = gameState.copy(otherManagers = gameState.otherManagers - playerIdToRemove)
+              context.log.info(
+                s"Node $node with address $address left the cluster, removing associated player: $playerIdToRemove"
+              )
+            }
+            Behaviors.same
 
           case _ =>
             Behaviors.same
