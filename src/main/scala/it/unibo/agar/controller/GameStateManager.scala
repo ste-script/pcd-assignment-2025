@@ -215,7 +215,15 @@ object GameStateManager:
             Behaviors.same
 
           case GameEnded(winnerId, winnerMass) =>
-            context.log.info(s"Game ended! Player $winnerId won with mass $winnerMass")
+            gameState = gameState.copy(world = gameState.world.updateWinner(winnerId, winnerMass))
+            winnerId match {
+              case `localPlayerId` =>
+                context.log.info(s"Game ended, player $winnerId won with mass $winnerMass")
+                gameState.otherManagers.values.foreach(_ ! GameEnded(winnerId, winnerMass))
+              case _ =>
+                context.log.info(s"Game ended, player $winnerId won with mass $winnerMass, not local player")
+            }
+            timers.cancelAll()
             Behaviors.same
 
           case PlayerLeft(leftPlayerId) =>

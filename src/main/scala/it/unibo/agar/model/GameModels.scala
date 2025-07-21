@@ -24,7 +24,8 @@ case class World(
     width: Int,
     height: Int,
     players: Seq[Player],
-    foods: Seq[Food]
+    foods: Seq[Food],
+    playerWon: Option[(String, Double)] = None
 ):
 
   def playersExcludingSelf(player: Player): Seq[Player] =
@@ -50,3 +51,6 @@ case class World(
 
   def removePlayer(playerId: String): World =
     copy(players = players.filterNot(_.id == playerId))
+    
+  def updateWinner(playerId: String, mass: Double): World =
+    copy(playerWon = Some((playerId, mass)))

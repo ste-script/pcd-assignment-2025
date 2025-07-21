@@ -70,6 +70,21 @@ class LocalView(
         case Success(world) =>
           if (!isShuttingDown) {
             currentWorld = world
+            if(currentWorld.playerWon.isDefined){
+              // Player has won, draw a message
+                val winner = currentWorld.playerWon.get
+                if(winner._1 == playerId) {
+                  contents = new Label(s"You won with mass: ${winner._2}") {
+                    horizontalAlignment = Alignment.Center
+                    preferredSize = new Dimension(400, 400)
+                  }
+                } else {
+                  contents = new Label(s"${winner._1} won with mass: ${winner._2}") {
+                    horizontalAlignment = Alignment.Center
+                    preferredSize = new Dimension(400, 400)
+                  }
+                }
+            }
             repaint()
           }
         case Failure(exception) =>
