@@ -27,7 +27,7 @@ object GameController:
     val width = 800
     val height = 800
     val numFoods = 100
-    val winningMass = 1000
+    val winningMass = 10000
     val playerSpeed = 10
     val serverPlayerId = "__server__"
     val basePort = 25251
